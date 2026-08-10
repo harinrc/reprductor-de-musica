@@ -31,7 +31,12 @@ const state = {
     particles: [],
     lastTime: 0
   },
-  selectedMood: "Energia"
+  selectedMood: "Energia",
+  discoverRequestId: 0,
+  discoverCache: {
+    music: { online: [], local: [] },
+    video: { online: [], local: [] }
+  }
 };
 
 const moods = ["Energia", "Relax", "Concentracion", "Fiesta", "Triste", "Romantica"];
@@ -393,18 +398,31 @@ function renderDiscovery(items) {
 async function loadDiscovery() {
   if (!refs.discoverSection) return;
 
+  const requestId = ++state.discoverRequestId;
+
   if (state.source === "local") {
     const local = state.library[state.mode].local;
-    renderDiscovery(local.slice(0, 18));
+    const localSlice = local.slice(0, 18);
+    state.discoverCache[state.mode].local = localSlice;
+    if (requestId !== state.discoverRequestId) return;
+    renderDiscovery(localSlice);
     return;
   }
 
   const query = moodQueries[state.selectedMood] || "top music";
   try {
     const results = await fetchYouTubeResults(query);
-    renderDiscovery(results.slice(0, 18));
+    if (requestId !== state.discoverRequestId) return;
+    const sliced = results.slice(0, 18);
+    if (sliced.length) {
+      state.discoverCache[state.mode].online = sliced;
+      renderDiscovery(sliced);
+      return;
+    }
+    renderDiscovery(state.discoverCache[state.mode].online || []);
   } catch (_) {
-    renderDiscovery([]);
+    if (requestId !== state.discoverRequestId) return;
+    renderDiscovery(state.discoverCache[state.mode].online || []);
   }
 }
 

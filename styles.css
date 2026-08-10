@@ -256,6 +256,10 @@ body {
   gap: 14px;
 }
 
+.content-grid[hidden] {
+  display: none !important;
+}
+
 .track-list {
   margin: 0;
   padding: 0;
