@@ -405,12 +405,12 @@ input[type="password"] {
   left: 50%;
   bottom: 86px;
   transform: translateX(-50%);
-  width: min(1160px, calc(100vw - 34px));
-  max-height: calc(100vh - 168px);
+  width: min(980px, calc(100vw - 54px));
+  max-height: calc(100vh - 210px);
   overflow: auto;
   z-index: 22;
   display: grid;
-  grid-template-columns: minmax(0, 1.06fr) minmax(330px, 0.94fr);
+  grid-template-columns: minmax(0, 1fr) minmax(290px, 0.9fr);
   grid-template-areas:
     "head head"
     "media queue"
@@ -419,8 +419,8 @@ input[type="password"] {
     "seek queue"
     "advanced queue";
   align-items: start;
-  gap: 14px 16px;
-  padding: 16px;
+  gap: 12px 14px;
+  padding: 14px;
 }
 
 .now-playing[hidden] {
@@ -435,8 +435,8 @@ input[type="password"] {
   position: sticky;
   top: 0;
   z-index: 3;
-  margin: -16px -16px 8px;
-  padding: 10px 16px;
+  margin: -14px -14px 6px;
+  padding: 9px 14px;
   background: linear-gradient(180deg, rgba(11, 14, 19, 0.98), rgba(11, 14, 19, 0.72));
 }
 
@@ -471,7 +471,7 @@ input[type="password"] {
 }
 
 .in-player-queue .track-list {
-  max-height: calc(100vh - 430px);
+  max-height: calc(100vh - 470px);
 }
 
 .media-zone {
@@ -504,7 +504,7 @@ input[type="password"] {
 }
 
 .video-wrap {
-  width: min(100%, 820px);
+  width: min(100%, 620px);
   aspect-ratio: 16 / 9;
   border-radius: 16px;
   overflow: hidden;
@@ -536,7 +536,7 @@ input[type="password"] {
 }
 
 .music-art {
-  width: min(100%, 560px);
+  width: min(100%, 500px);
   aspect-ratio: 1 / 1;
   height: auto;
   border-radius: 18px;
