@@ -177,7 +177,10 @@ body {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: linear-gradient(180deg, #121722, #0d1219);
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  -webkit-overflow-scrolling: touch;
   cursor: pointer;
 }
 
@@ -740,6 +743,26 @@ input[type="password"] {
 
 .now-playing.is-tight .in-player-queue .track-list {
   min-height: 130px;
+}
+
+.now-playing.is-tight {
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "head"
+    "media"
+    "meta"
+    "controls"
+    "seek"
+    "advanced"
+    "queue";
+}
+
+.now-playing.is-tight .music-art {
+  width: min(100%, 420px);
+}
+
+.now-playing.is-tight .video-wrap {
+  width: min(100%, 560px);
 }
 
 .advanced-row .chip {

@@ -691,15 +691,57 @@ function clamp(value, min, max) {
 function applyPlayerAdaptiveLayout() {
   const panel = refs.nowPlayingSection;
   if (!panel) return;
+  fitPlayerToViewport();
   const w = panel.clientWidth;
   const h = panel.clientHeight;
   panel.classList.toggle("is-compact", w < 920);
-  panel.classList.toggle("is-tight", h < 560);
+  panel.classList.toggle("is-tight", h < 650);
+}
+
+function fitPlayerToViewport() {
+  const panel = refs.nowPlayingSection;
+  if (!panel) return;
+
+  const margin = 8;
+  const maxW = Math.max(320, window.innerWidth - (margin * 2));
+  const maxH = Math.max(300, window.innerHeight - 92);
+
+  if (panel.offsetWidth > maxW) {
+    panel.style.width = `${maxW}px`;
+  }
+
+  if (panel.offsetHeight > maxH) {
+    panel.style.height = `${maxH}px`;
+  }
+
+  const rect = panel.getBoundingClientRect();
+  let nextLeft = rect.left;
+  let nextTop = rect.top;
+
+  if (rect.right > window.innerWidth - margin) {
+    nextLeft -= (rect.right - (window.innerWidth - margin));
+  }
+  if (rect.left < margin) {
+    nextLeft = margin;
+  }
+
+  if (rect.bottom > window.innerHeight - margin) {
+    nextTop -= (rect.bottom - (window.innerHeight - margin));
+  }
+  if (rect.top < margin) {
+    nextTop = margin;
+  }
+
+  panel.style.left = `${Math.round(nextLeft)}px`;
+  panel.style.top = `${Math.round(nextTop)}px`;
+  panel.style.bottom = "auto";
+  panel.style.transform = "none";
 }
 
 function centerPlayerWindow() {
   const panel = refs.nowPlayingSection;
   if (!panel) return;
+  fitPlayerToViewport();
   const rect = panel.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   const left = Math.round((window.innerWidth - rect.width) / 2);
@@ -719,6 +761,7 @@ function resetPlayerWindow() {
   panel.style.top = "86px";
   panel.style.bottom = "auto";
   panel.style.transform = "none";
+  fitPlayerToViewport();
   requestAnimationFrame(() => {
     centerPlayerWindow();
     applyPlayerAdaptiveLayout();
@@ -2116,7 +2159,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=20", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=21", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
