@@ -71,7 +71,10 @@
     <section id="nowPlayingSection" class="now-playing panel" hidden>
       <div id="playerHead" class="player-head">
         <strong>Reproduciendo</strong>
-        <button id="closePlayerBtn" class="ghost" aria-label="Cerrar reproductor">Cerrar</button>
+        <div class="player-head-actions">
+          <button id="resetPlayerBtn" class="ghost" aria-label="Restablecer tamano y posicion del reproductor">Restablecer</button>
+          <button id="closePlayerBtn" class="ghost" aria-label="Cerrar reproductor">Cerrar</button>
+        </div>
       </div>
       <div class="media-zone">
         <div id="videoFrameWrap" class="video-wrap" hidden>
