@@ -15,7 +15,18 @@
   <div class="bg-shape bg-shape-a"></div>
   <div class="bg-shape bg-shape-b"></div>
 
-  <main class="app-shell">
+  <div class="app-frame">
+    <aside class="side-rail" aria-label="Navegacion principal">
+      <div class="rail-brand">
+        <span class="dot"></span>
+        <strong>Duo</strong>
+      </div>
+      <button class="rail-btn is-active" aria-label="Inicio" title="Inicio">Inicio</button>
+      <button class="rail-btn" aria-label="Explorar" title="Explorar">Explorar</button>
+      <button class="rail-btn" aria-label="Biblioteca" title="Biblioteca">Biblioteca</button>
+    </aside>
+
+    <main class="app-shell">
     <header class="topbar">
       <h1>Reproductor Duo</h1>
       <p>Experiencia AMOLED para musica y video, online y offline.</p>
@@ -128,7 +139,23 @@
         <ul id="queueList" class="track-list" aria-live="polite"></ul>
       </article>
     </section>
-  </main>
+    </main>
+  </div>
+
+  <footer id="miniPlayer" class="mini-player" hidden>
+    <div class="mini-left">
+      <img id="miniArt" alt="Portada" />
+      <div>
+        <div id="miniTitle" class="mini-title">Sin reproduccion</div>
+        <div id="miniSub" class="mini-sub">Selecciona una pista</div>
+      </div>
+    </div>
+    <div class="mini-actions">
+      <button id="miniPrev" class="mini-btn" aria-label="Anterior">⏮</button>
+      <button id="miniPlayPause" class="mini-btn primary" aria-label="Play o pause">⏯</button>
+      <button id="miniNext" class="mini-btn" aria-label="Siguiente">⏭</button>
+    </div>
+  </footer>
 
   <script src="config.js"></script>
   <script src="https://www.youtube.com/iframe_api"></script>

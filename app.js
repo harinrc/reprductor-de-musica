@@ -93,6 +93,13 @@ const refs = {
   nowArt: document.getElementById("nowArt"),
   visualizerCanvas: document.getElementById("visualizerCanvas"),
   artPulse: document.getElementById("artPulse"),
+  miniPlayer: document.getElementById("miniPlayer"),
+  miniArt: document.getElementById("miniArt"),
+  miniTitle: document.getElementById("miniTitle"),
+  miniSub: document.getElementById("miniSub"),
+  miniPrev: document.getElementById("miniPrev"),
+  miniPlayPause: document.getElementById("miniPlayPause"),
+  miniNext: document.getElementById("miniNext"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
   prevBtn: document.getElementById("prevBtn"),
@@ -391,6 +398,20 @@ function drawVisualizerFrame() {
   const bars = 72;
   const gap = width / bars;
 
+  ctx.beginPath();
+  for (let i = 0; i <= bars; i += 1) {
+    const x = i * gap;
+    const waveY = lineY - Math.sin((i * 0.34) + performance.now() * 0.004) * (8 + energy * 26);
+    if (i === 0) {
+      ctx.moveTo(x, waveY);
+    } else {
+      ctx.lineTo(x, waveY);
+    }
+  }
+  ctx.strokeStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${0.22 + energy * 0.4})`;
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
   for (let i = 0; i < bars; i += 1) {
     const x = i * gap + gap * 0.5;
     const bin = spectrum ? spectrum[Math.floor((i / bars) * spectrum.length)] / 255 : Math.random() * energy;
@@ -407,6 +428,7 @@ function drawVisualizerFrame() {
   }
 
   spawnVisualizerParticle(energy, width, height, rgb);
+  spawnVisualizerParticle(energy * 0.75, width, height, rgb);
   for (let i = state.visualizer.particles.length - 1; i >= 0; i -= 1) {
     const p = state.visualizer.particles[i];
     p.x += p.vx;
@@ -455,6 +477,7 @@ function playItem(item, queuePosition = null) {
   refs.nowTitle.textContent = item.title;
   refs.nowSubtitle.textContent = item.subtitle || "";
   updateArtworkUi(item);
+  updateMiniPlayer(item);
   applyDynamicTheme(item);
 
   if (item.kind === "local") {
@@ -466,6 +489,15 @@ function playItem(item, queuePosition = null) {
   updateMediaSurface();
   updateMediaSession();
   renderQueue();
+}
+
+function updateMiniPlayer(item) {
+  if (!refs.miniPlayer || !item) return;
+  refs.miniPlayer.hidden = false;
+  refs.miniTitle.textContent = item.title || "Sin reproduccion";
+  refs.miniSub.textContent = item.subtitle || "";
+  refs.miniArt.src = item.thumbnail || "icon-192.svg";
+  refs.miniPlayPause.textContent = state.isPlaying ? "⏸" : "▶";
 }
 
 function updateArtworkUi(item) {
@@ -584,6 +616,7 @@ function togglePlay() {
 
   state.isPlaying = true;
   updateMediaSession();
+  if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
 }
 
 function togglePause() {
@@ -597,6 +630,7 @@ function togglePause() {
 
   state.isPlaying = false;
   updateMediaSession();
+  if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
 }
 
 function seekBy(delta) {
@@ -1090,6 +1124,18 @@ function bindEvents() {
   refs.fwdBtn.addEventListener("click", () => seekBy(10));
   refs.nextBtn.addEventListener("click", nextTrack);
 
+  if (refs.miniPrev) refs.miniPrev.addEventListener("click", previousTrack);
+  if (refs.miniNext) refs.miniNext.addEventListener("click", nextTrack);
+  if (refs.miniPlayPause) {
+    refs.miniPlayPause.addEventListener("click", () => {
+      if (state.isPlaying) {
+        togglePause();
+      } else {
+        togglePlay();
+      }
+    });
+  }
+
   refs.seekBar.addEventListener("input", () => setSeekPercent(refs.seekBar.value));
 
   refs.volumeBar.addEventListener("input", () => {
@@ -1133,10 +1179,12 @@ function bindEvents() {
   refs.htmlPlayer.addEventListener("play", () => {
     state.isPlaying = true;
     updateMediaSession();
+    if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
   });
   refs.htmlPlayer.addEventListener("pause", () => {
     state.isPlaying = false;
     updateMediaSession();
+    if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
   });
 }
 
@@ -1182,10 +1230,12 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
         if (event.data === YT.PlayerState.PLAYING) {
           state.isPlaying = true;
           updateMediaSession();
+          if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
         }
         if (event.data === YT.PlayerState.PAUSED) {
           state.isPlaying = false;
           updateMediaSession();
+          if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
         }
       }
     }
