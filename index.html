@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f4c5c" />
+  <title>Reproductor Duo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&family=Sora:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="app-shell">
+    <header class="topbar">
+      <h1>Reproductor Duo</h1>
+      <p>Musica y Videos separados, local y online.</p>
+    </header>
+
+    <section class="mode-switch" aria-label="Selector de modo">
+      <button id="modeMusic" class="pill is-active" data-mode="music">Musica</button>
+      <button id="modeVideo" class="pill" data-mode="video">Videos</button>
+      <button id="sourceLocal" class="chip is-active" data-source="local">Local</button>
+      <button id="sourceOnline" class="chip" data-source="online">YouTube</button>
+    </section>
+
+    <section class="search-panel">
+      <div class="search-row" id="onlineSearchRow" hidden>
+        <input id="onlineQuery" type="text" placeholder="Buscar en YouTube..." autocomplete="off" />
+        <button id="onlineSearchBtn" class="accent-btn">Buscar</button>
+      </div>
+
+      <div class="search-row" id="onlineApiRow" hidden>
+        <input id="ytApiKeyInput" type="password" placeholder="YouTube API key (para GitHub Pages)" autocomplete="off" />
+        <button id="saveApiKeyBtn" class="ghost">Guardar key</button>
+        <button id="clearApiKeyBtn" class="ghost">Borrar key</button>
+      </div>
+
+      <p id="onlineHint" class="online-hint" hidden></p>
+
+      <div class="search-row" id="localSearchRow">
+        <input id="localQuery" type="text" placeholder="Filtrar biblioteca local..." autocomplete="off" />
+        <label for="localPicker" class="accent-btn">Cargar archivos</label>
+        <input id="localPicker" type="file" multiple hidden />
+      </div>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel">
+        <h2>Resultados / Biblioteca</h2>
+        <ul id="libraryList" class="track-list" aria-live="polite"></ul>
+      </article>
+
+      <article class="panel">
+        <h2>Cola de reproduccion</h2>
+        <ul id="queueList" class="track-list" aria-live="polite"></ul>
+      </article>
+    </section>
+
+    <section class="now-playing panel">
+      <div class="media-zone">
+        <div id="videoFrameWrap" class="video-wrap" hidden>
+          <div id="youtubePlayer"></div>
+          <video id="htmlPlayer" playsinline></video>
+        </div>
+        <div id="musicArt" class="music-art">
+          <div class="pulse"></div>
+        </div>
+      </div>
+
+      <div class="meta-zone">
+        <h3 id="nowTitle">Sin reproduccion</h3>
+        <p id="nowSubtitle">Selecciona una pista o video</p>
+      </div>
+
+      <div class="controls">
+        <button id="prevBtn" class="ghost">Prev</button>
+        <button id="backBtn" class="ghost">-10s</button>
+        <button id="playBtn" class="accent-btn">Play</button>
+        <button id="pauseBtn" class="ghost">Pause</button>
+        <button id="fwdBtn" class="ghost">+10s</button>
+        <button id="nextBtn" class="ghost">Next</button>
+      </div>
+
+      <div class="seek-row">
+        <span id="currentTime">00:00</span>
+        <input id="seekBar" type="range" min="0" max="100" step="0.1" value="0" />
+        <span id="durationTime">00:00</span>
+      </div>
+
+      <div class="advanced-row">
+        <label>Vol
+          <input id="volumeBar" type="range" min="0" max="1" step="0.01" value="0.9" />
+        </label>
+
+        <label>Velocidad
+          <select id="speedSelect">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </label>
+
+        <button id="shuffleBtn" class="chip" aria-pressed="false">Shuffle off</button>
+        <button id="repeatBtn" class="chip" aria-pressed="false">Repeat off</button>
+        <button id="autoplayBtn" class="chip is-active" aria-pressed="true">Autoplay on</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="app.js"></script>
+</body>
+</html>
