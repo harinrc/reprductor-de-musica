@@ -69,6 +69,10 @@
     </section>
 
     <section id="nowPlayingSection" class="now-playing panel" hidden>
+      <div class="player-head">
+        <strong>Reproduciendo</strong>
+        <button id="closePlayerBtn" class="ghost" aria-label="Cerrar reproductor">Cerrar</button>
+      </div>
       <div class="media-zone">
         <div id="videoFrameWrap" class="video-wrap" hidden>
           <div id="youtubePlayer"></div>
@@ -134,6 +138,11 @@
         <button id="repeatBtn" class="chip" aria-pressed="false">Repeat off</button>
         <button id="autoplayBtn" class="chip is-active" aria-pressed="true">Autoplay on</button>
       </div>
+
+      <article class="panel in-player-queue">
+        <h2>Cola de reproduccion</h2>
+        <ul id="queueList" class="track-list" aria-live="polite"></ul>
+      </article>
     </section>
 
     <section class="content-grid">
@@ -141,17 +150,12 @@
         <h2>Resultados / Biblioteca</h2>
         <ul id="libraryList" class="track-list" aria-live="polite"></ul>
       </article>
-
-      <article class="panel">
-        <h2>Cola de reproduccion</h2>
-        <ul id="queueList" class="track-list" aria-live="polite"></ul>
-      </article>
     </section>
     </main>
   </div>
 
   <footer id="miniPlayer" class="mini-player" hidden>
-    <div class="mini-left">
+    <div id="miniOpenArea" class="mini-left">
       <img id="miniArt" alt="Portada" />
       <div>
         <div id="miniTitle" class="mini-title">Sin reproduccion</div>

@@ -112,9 +112,11 @@ const refs = {
   miniArt: document.getElementById("miniArt"),
   miniTitle: document.getElementById("miniTitle"),
   miniSub: document.getElementById("miniSub"),
+  miniOpenArea: document.getElementById("miniOpenArea"),
   miniPrev: document.getElementById("miniPrev"),
   miniPlayPause: document.getElementById("miniPlayPause"),
   miniNext: document.getElementById("miniNext"),
+  closePlayerBtn: document.getElementById("closePlayerBtn"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
   prevBtn: document.getElementById("prevBtn"),
@@ -324,6 +326,11 @@ function renderQueue() {
 function renderAll() {
   renderLibrary();
   renderQueue();
+}
+
+function setPlayerOpen(open) {
+  if (!refs.nowPlayingSection) return;
+  refs.nowPlayingSection.hidden = !open;
 }
 
 function renderMoodChips() {
@@ -602,8 +609,6 @@ function playItem(item, queuePosition = null) {
 
   refs.nowTitle.textContent = item.title;
   refs.nowSubtitle.textContent = item.subtitle || "";
-  if (refs.nowPlayingSection) refs.nowPlayingSection.hidden = false;
-  if (refs.discoverSection) refs.discoverSection.hidden = true;
   updateArtworkUi(item);
   updateMiniPlayer(item);
   applyDynamicTheme(item);
@@ -863,7 +868,6 @@ async function searchOnline() {
     }
     state.library[state.mode].online = results;
     renderLibrary(results);
-    if (refs.discoverSection) refs.discoverSection.hidden = true;
   } catch (err) {
     renderLibrary([]);
     const li = document.createElement("li");
@@ -1264,6 +1268,18 @@ function bindEvents() {
     });
   }
 
+  if (refs.miniOpenArea) {
+    refs.miniOpenArea.addEventListener("click", () => {
+      setPlayerOpen(true);
+    });
+  }
+
+  if (refs.closePlayerBtn) {
+    refs.closePlayerBtn.addEventListener("click", () => {
+      setPlayerOpen(false);
+    });
+  }
+
   refs.seekBar.addEventListener("input", () => setSeekPercent(refs.seekBar.value));
 
   refs.volumeBar.addEventListener("input", () => {
@@ -1404,9 +1420,10 @@ function bootstrap() {
   bindEvents();
   initAudioVisualizer();
   renderMoodChips();
+  if (refs.miniPlayer) refs.miniPlayer.hidden = false;
   setMode("music");
-  setSource("local");
-  if (refs.nowPlayingSection) refs.nowPlayingSection.hidden = true;
+  setSource("online");
+  setPlayerOpen(false);
   if (refs.discoverSection) refs.discoverSection.hidden = false;
   loadDiscovery();
   setMediaActionHandlers();

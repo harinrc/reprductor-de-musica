@@ -252,7 +252,7 @@ body {
 
 .content-grid {
   display: grid;
-  grid-template-columns: 1.4fr 1fr;
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
@@ -392,9 +392,27 @@ input[type="password"] {
 }
 
 .now-playing {
+  position: fixed;
+  left: 50%;
+  bottom: 86px;
+  transform: translateX(-50%);
+  width: min(980px, calc(100vw - 26px));
+  max-height: calc(100vh - 112px);
+  overflow: auto;
+  z-index: 22;
   display: grid;
   gap: 12px;
   padding: 16px;
+}
+
+.player-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.in-player-queue {
+  margin-top: 2px;
 }
 
 .media-zone {
@@ -545,6 +563,7 @@ input[type="password"] {
   grid-template-columns: 52px 1fr;
   align-items: center;
   gap: 10px;
+  cursor: pointer;
 }
 
 #miniArt {
@@ -611,6 +630,13 @@ label {
 
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .now-playing {
+    width: calc(100vw - 14px);
+    bottom: 78px;
+    max-height: calc(100vh - 90px);
+    border-radius: 16px;
   }
 
   .controls {
