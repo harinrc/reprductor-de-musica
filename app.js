@@ -14,7 +14,7 @@ const state = {
     video: { local: -1, online: -1 }
   },
   shuffle: false,
-  repeat: false,
+  repeatMode: "off",
   autoplay: true,
   current: null,
   ytReady: false,
@@ -234,7 +234,23 @@ function updateShuffleUi() {
   if (refs.shuffleControlBtn) {
     refs.shuffleControlBtn.classList.toggle("is-active", state.shuffle);
     refs.shuffleControlBtn.setAttribute("aria-pressed", String(state.shuffle));
+    refs.shuffleControlBtn.textContent = state.shuffle ? "Shuffle on" : "Shuffle off";
   }
+}
+
+function updateRepeatUi() {
+  if (!refs.repeatBtn) return;
+  refs.repeatBtn.classList.toggle("is-active", state.repeatMode !== "off");
+  refs.repeatBtn.setAttribute("aria-pressed", String(state.repeatMode !== "off"));
+  if (state.repeatMode === "one") {
+    refs.repeatBtn.textContent = "Repeat 1";
+    return;
+  }
+  if (state.repeatMode === "all") {
+    refs.repeatBtn.textContent = "Repeat all";
+    return;
+  }
+  refs.repeatBtn.textContent = "Repeat off";
 }
 
 function currentShareUrl() {
@@ -1168,6 +1184,10 @@ function nextTrack() {
 
   let idx = nowIndex() + 1;
   if (idx >= queue.length) {
+    if (state.repeatMode === "all") {
+      playItem(queue[0], 0);
+      return;
+    }
     handleQueueEnd();
     return;
   }
@@ -1180,15 +1200,20 @@ function previousTrack() {
   if (!queue.length) return;
 
   let idx = nowIndex() - 1;
-  if (idx < 0) idx = 0;
+  if (idx < 0) idx = state.repeatMode === "all" ? queue.length - 1 : 0;
   playItem(queue[idx], idx);
 }
 
 async function handleQueueEnd() {
   if (!state.current) return;
 
-  if (state.repeat) {
+  if (state.repeatMode === "one") {
     playItem(state.current, nowIndex());
+    return;
+  }
+
+  if (state.repeatMode === "all" && nowQueue().length) {
+    playItem(nowQueue()[0], 0);
     return;
   }
 
@@ -1779,10 +1804,14 @@ function bindEvents() {
   });
 
   refs.repeatBtn.addEventListener("click", () => {
-    state.repeat = !state.repeat;
-    refs.repeatBtn.classList.toggle("is-active", state.repeat);
-    refs.repeatBtn.setAttribute("aria-pressed", String(state.repeat));
-    refs.repeatBtn.textContent = state.repeat ? "Repeat on" : "Repeat off";
+    if (state.repeatMode === "off") {
+      state.repeatMode = "one";
+    } else if (state.repeatMode === "one") {
+      state.repeatMode = "all";
+    } else {
+      state.repeatMode = "off";
+    }
+    updateRepeatUi();
   });
 
   refs.autoplayBtn.addEventListener("click", () => {
@@ -1909,6 +1938,7 @@ function bootstrap() {
   renderMoodChips();
   updatePrimaryPlayButton();
   updateShuffleUi();
+  updateRepeatUi();
   updateQueueViewUi();
   if (refs.miniPlayer) refs.miniPlayer.hidden = false;
   setMode("music");
@@ -1921,7 +1951,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=14", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=15", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
