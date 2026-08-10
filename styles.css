@@ -448,6 +448,12 @@ input[type="password"] {
   user-select: none;
 }
 
+.player-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .player-head.dragging {
   cursor: grabbing;
 }
@@ -455,6 +461,11 @@ input[type="password"] {
 #closePlayerBtn {
   border-color: rgba(var(--aura-rgb), 0.34);
   background: rgba(var(--aura-rgb), 0.12);
+}
+
+#resetPlayerBtn {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .in-player-queue {
@@ -874,6 +885,10 @@ label {
 
   #closePlayerBtn {
     font-weight: 700;
+  }
+
+  #resetPlayerBtn {
+    display: none;
   }
 
   .music-art {

@@ -142,6 +142,7 @@ const refs = {
   miniPlayPause: document.getElementById("miniPlayPause"),
   miniNext: document.getElementById("miniNext"),
   closePlayerBtn: document.getElementById("closePlayerBtn"),
+  resetPlayerBtn: document.getElementById("resetPlayerBtn"),
   playerHead: document.getElementById("playerHead"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
@@ -707,6 +708,21 @@ function centerPlayerWindow() {
   panel.style.top = `${Math.max(8, top)}px`;
   panel.style.bottom = "auto";
   panel.style.transform = "none";
+}
+
+function resetPlayerWindow() {
+  const panel = refs.nowPlayingSection;
+  if (!panel) return;
+  panel.style.width = "";
+  panel.style.height = "";
+  panel.style.left = "32px";
+  panel.style.top = "86px";
+  panel.style.bottom = "auto";
+  panel.style.transform = "none";
+  requestAnimationFrame(() => {
+    centerPlayerWindow();
+    applyPlayerAdaptiveLayout();
+  });
 }
 
 function enablePlayerWindowInteraction() {
@@ -1930,6 +1946,12 @@ function bindEvents() {
     });
   }
 
+  if (refs.resetPlayerBtn) {
+    refs.resetPlayerBtn.addEventListener("click", () => {
+      resetPlayerWindow();
+    });
+  }
+
   refs.seekBar.addEventListener("input", () => setSeekPercent(refs.seekBar.value));
 
   refs.volumeBar.addEventListener("input", () => {
@@ -2094,7 +2116,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=19", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=20", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
