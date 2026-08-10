@@ -81,6 +81,8 @@ const refs = {
   htmlPlayer: document.getElementById("htmlPlayer"),
   videoFrameWrap: document.getElementById("videoFrameWrap"),
   musicArt: document.getElementById("musicArt"),
+  nowArt: document.getElementById("nowArt"),
+  artPulse: document.getElementById("artPulse"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
   prevBtn: document.getElementById("prevBtn"),
@@ -226,12 +228,20 @@ function renderLibrary(items = null) {
   list.forEach((item) => {
     const li = document.createElement("li");
     li.className = "track-item";
+    const thumb = item.thumbnail
+      ? `<img class="thumb" src="${escapeHtml(item.thumbnail)}" alt="portada" loading="lazy" />`
+      : `<div class="thumb placeholder">${state.mode === "music" ? "MUS" : "VID"}</div>`;
     li.innerHTML = `
-      <div class="title">${escapeHtml(item.title)}</div>
-      <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+      <div class="track-head">
+        ${thumb}
+        <div>
+          <div class="title">${escapeHtml(item.title)}</div>
+          <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+        </div>
+      </div>
       <div class="actions">
-        <button class="ghost" data-action="play" data-id="${item.id}">Reproducir</button>
-        <button class="ghost" data-action="add" data-id="${item.id}">Agregar a cola</button>
+        <button class="ghost" data-action="play" data-id="${item.id}" aria-label="Reproducir" title="Reproducir">▶</button>
+        <button class="ghost" data-action="add" data-id="${item.id}" aria-label="Agregar a cola" title="Agregar a cola">＋</button>
       </div>
     `;
     refs.libraryList.appendChild(li);
@@ -257,12 +267,20 @@ function renderQueue() {
     if (i === idx) {
       li.style.border = "2px solid #0f4c5c";
     }
+    const thumb = item.thumbnail
+      ? `<img class="thumb" src="${escapeHtml(item.thumbnail)}" alt="portada" loading="lazy" />`
+      : `<div class="thumb placeholder">${state.mode === "music" ? "MUS" : "VID"}</div>`;
     li.innerHTML = `
-      <div class="title">${escapeHtml(item.title)}</div>
-      <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+      <div class="track-head">
+        ${thumb}
+        <div>
+          <div class="title">${escapeHtml(item.title)}</div>
+          <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+        </div>
+      </div>
       <div class="actions">
-        <button class="ghost" data-action="jump" data-pos="${i}">Ir</button>
-        <button class="ghost" data-action="remove" data-pos="${i}">Quitar</button>
+        <button class="ghost" data-action="jump" data-pos="${i}" aria-label="Ir a esta pista" title="Ir">⏵</button>
+        <button class="ghost" data-action="remove" data-pos="${i}" aria-label="Quitar" title="Quitar">✕</button>
       </div>
     `;
     refs.queueList.appendChild(li);
@@ -298,6 +316,8 @@ function playItem(item, queuePosition = null) {
 
   refs.nowTitle.textContent = item.title;
   refs.nowSubtitle.textContent = item.subtitle || "";
+  updateArtworkUi(item);
+  applyDynamicTheme(item);
 
   if (item.kind === "local") {
     playLocal(item);
@@ -308,6 +328,75 @@ function playItem(item, queuePosition = null) {
   updateMediaSurface();
   updateMediaSession();
   renderQueue();
+}
+
+function updateArtworkUi(item) {
+  if (item.thumbnail) {
+    refs.nowArt.src = item.thumbnail;
+    refs.nowArt.hidden = false;
+    refs.artPulse.hidden = true;
+    return;
+  }
+
+  refs.nowArt.hidden = true;
+  refs.artPulse.hidden = false;
+}
+
+function applyDynamicTheme(item) {
+  const fallback = state.mode === "music" ? "123,224,255" : "255,109,65";
+  if (!item.thumbnail) {
+    document.documentElement.style.setProperty("--aura-rgb", fallback);
+    return;
+  }
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.referrerPolicy = "no-referrer";
+  img.onload = () => {
+    const sampled = sampleImageColor(img);
+    document.documentElement.style.setProperty("--aura-rgb", sampled || fallback);
+  };
+  img.onerror = () => {
+    document.documentElement.style.setProperty("--aura-rgb", fallback);
+  };
+  img.src = item.thumbnail;
+}
+
+function sampleImageColor(img) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+
+  const w = 32;
+  const h = 32;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const { data } = ctx.getImageData(0, 0, w, h);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const rr = data[i];
+    const gg = data[i + 1];
+    const bb = data[i + 2];
+    const alpha = data[i + 3];
+    if (alpha < 120) continue;
+
+    const bright = (rr + gg + bb) / 3;
+    if (bright < 24 || bright > 238) continue;
+
+    r += rr;
+    g += gg;
+    b += bb;
+    count += 1;
+  }
+
+  if (!count) return null;
+  return `${Math.round(r / count)},${Math.round(g / count)},${Math.round(b / count)}`;
 }
 
 function playLocal(item) {
@@ -519,8 +608,8 @@ async function fetchYouTubeResults(query) {
         .map((x) => ({
           id: `yt-${x.videoId}`,
           youtubeId: x.videoId,
-          title: x.title || "Sin titulo",
-          subtitle: `${x.author || "Canal"} - ${formatTime(x.lengthSeconds || 0)}`,
+          title: normalizeText(x.title || "Sin titulo"),
+          subtitle: `${normalizeText(x.author || "Canal")} - ${formatTime(x.lengthSeconds || 0)}`,
           thumbnail: x.videoThumbnails?.[0]?.url || "",
           kind: "youtube"
         }));
@@ -564,8 +653,8 @@ async function fetchYouTubeResultsViaApiKey(query, apiKey) {
       return {
         id: `yt-${videoId}`,
         youtubeId: videoId,
-        title: snippet.title || "Sin titulo",
-        subtitle: `${snippet.channelTitle || "Canal"} - ${formatTime(sec)}`,
+        title: normalizeText(snippet.title || "Sin titulo"),
+        subtitle: `${normalizeText(snippet.channelTitle || "Canal")} - ${formatTime(sec)}`,
         thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.default?.url || "",
         kind: "youtube"
       };
@@ -634,8 +723,8 @@ async function fetchRecommendations(videoId) {
         .map((x) => ({
           id: `yt-${x.videoId}`,
           youtubeId: x.videoId,
-          title: x.title || "Recomendado",
-          subtitle: `${x.author || "Canal"} - ${formatTime(x.lengthSeconds || 0)}`,
+          title: normalizeText(x.title || "Recomendado"),
+          subtitle: `${normalizeText(x.author || "Canal")} - ${formatTime(x.lengthSeconds || 0)}`,
           thumbnail: "",
           kind: "youtube"
         }));
@@ -676,8 +765,8 @@ async function fetchRecommendationsViaApiKey(videoId, apiKey) {
       return {
         id: `yt-${vid}`,
         youtubeId: vid,
-        title: snippet.title || "Recomendado",
-        subtitle: `${snippet.channelTitle || "Canal"} - ${formatTime(sec)}`,
+        title: normalizeText(snippet.title || "Recomendado"),
+        subtitle: `${normalizeText(snippet.channelTitle || "Canal")} - ${formatTime(sec)}`,
         thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.default?.url || "",
         kind: "youtube"
       };
@@ -918,6 +1007,16 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function decodeHtmlEntities(str) {
+  const txt = document.createElement("textarea");
+  txt.innerHTML = String(str || "");
+  return txt.value;
+}
+
+function normalizeText(value) {
+  return decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
 }
 
 window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
