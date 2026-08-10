@@ -406,7 +406,7 @@ input[type="password"] {
   bottom: 86px;
   transform: translateX(-50%);
   width: min(1160px, calc(100vw - 34px));
-  max-height: calc(100vh - 100px);
+  max-height: calc(100vh - 168px);
   overflow: auto;
   z-index: 22;
   display: grid;
@@ -433,9 +433,9 @@ input[type="password"] {
   justify-content: space-between;
   align-items: center;
   position: sticky;
-  top: -16px;
+  top: 0;
   z-index: 3;
-  margin: -16px -16px 0;
+  margin: -16px -16px 8px;
   padding: 10px 16px;
   background: linear-gradient(180deg, rgba(11, 14, 19, 0.98), rgba(11, 14, 19, 0.72));
 }
@@ -471,7 +471,7 @@ input[type="password"] {
 }
 
 .in-player-queue .track-list {
-  max-height: calc(100vh - 320px);
+  max-height: calc(100vh - 430px);
 }
 
 .media-zone {
@@ -823,8 +823,9 @@ label {
   }
 
   .player-head {
-    top: -12px;
-    padding-top: 12px;
+    top: 0;
+    margin-bottom: 6px;
+    padding-top: 10px;
   }
 
   #closePlayerBtn {

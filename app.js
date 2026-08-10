@@ -38,8 +38,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related" },
-    video: { related: [], results: [], view: "related" }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "" },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "" }
   }
 };
 
@@ -220,6 +220,48 @@ function queueItemsForRender() {
 
   const q = onlineQueueState();
   return getActiveQueueView() === "results" ? q.results : q.related;
+}
+
+async function fetchRecommendationsSafe(videoId) {
+  try {
+    return await fetchRecommendations(videoId);
+  } catch (_) {
+    return [];
+  }
+}
+
+async function ensureOnlineQueueGrowth(minAhead = 5) {
+  if (state.source !== "online" || state.current?.kind !== "youtube") return;
+  const qState = onlineQueueState();
+  if (qState.loading) return;
+
+  const related = qState.related;
+  if (!Array.isArray(related) || !related.length) return;
+
+  const idx = Math.max(0, nowIndex());
+  const ahead = related.length - (idx + 1);
+  if (ahead >= minAhead) return;
+
+  const seed = related[related.length - 1] || state.current;
+  if (!seed?.youtubeId) return;
+  if (qState.lastSeedId === seed.id && ahead > 0) return;
+
+  qState.loading = true;
+  qState.lastSeedId = seed.id;
+  try {
+    const rec = await fetchRecommendationsSafe(seed.youtubeId);
+    if (!rec.length) return;
+
+    const existing = new Set(related.map((x) => x.id));
+    const fresh = rec.filter((r) => r.id && !existing.has(r.id));
+    if (!fresh.length) return;
+
+    related.push(...fresh);
+    state.queue[state.mode][state.source] = related;
+    renderQueue();
+  } finally {
+    qState.loading = false;
+  }
 }
 
 function updatePrimaryPlayButton() {
@@ -805,7 +847,7 @@ async function startSmartPlayback(item, sourceItems = null) {
   playItem(item, 0);
 
   if (item.kind === "youtube") {
-    const rec = await fetchRecommendations(item.youtubeId);
+    const rec = await fetchRecommendationsSafe(item.youtubeId);
     if (rec.length) {
       const existing = new Set(nowQueue().map((x) => x.id));
       const fresh = rec.filter((r) => !existing.has(r.id));
@@ -818,6 +860,7 @@ async function startSmartPlayback(item, sourceItems = null) {
       }
       renderQueue();
     }
+    ensureOnlineQueueGrowth(6).catch(() => null);
   }
 }
 
@@ -1002,6 +1045,10 @@ function playItem(item, queuePosition = null) {
   updateMediaSession();
   updatePrimaryPlayButton();
   renderQueue();
+
+  if (state.source === "online" && item.kind === "youtube") {
+    ensureOnlineQueueGrowth(6).catch(() => null);
+  }
 }
 
 function updateMiniPlayer(item) {
@@ -1223,7 +1270,7 @@ async function handleQueueEnd() {
   }
 
   if (state.current.kind === "youtube") {
-    const rec = await fetchRecommendations(state.current.youtubeId);
+    const rec = await fetchRecommendationsSafe(state.current.youtubeId);
     if (rec.length) {
       const picked = rec[0];
       nowQueue().push(picked);
@@ -1460,8 +1507,12 @@ async function fetchDurationMapByVideoIds(videoIds, apiKey) {
 
 async function fetchRecommendations(videoId) {
   if (state.youtubeApiKey) {
-    const byApiKey = await fetchRecommendationsViaApiKey(videoId, state.youtubeApiKey);
-    if (byApiKey.length) return byApiKey;
+    try {
+      const byApiKey = await fetchRecommendationsViaApiKey(videoId, state.youtubeApiKey);
+      if (byApiKey.length) return byApiKey;
+    } catch (_) {
+      // Continue with fallback recommenders.
+    }
   }
 
   if (hasLocalApi()) {
@@ -1951,7 +2002,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=16", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=17", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
