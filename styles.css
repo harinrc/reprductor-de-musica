@@ -405,6 +405,10 @@ input[type="password"] {
   padding: 16px;
 }
 
+.now-playing[hidden] {
+  display: none !important;
+}
+
 .player-head {
   display: flex;
   justify-content: space-between;

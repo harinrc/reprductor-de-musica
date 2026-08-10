@@ -333,6 +333,10 @@ function setPlayerOpen(open) {
   refs.nowPlayingSection.hidden = !open;
 }
 
+function isPlayerOpen() {
+  return Boolean(refs.nowPlayingSection && !refs.nowPlayingSection.hidden);
+}
+
 function renderMoodChips() {
   if (!refs.moodChips) return;
   refs.moodChips.innerHTML = "";
@@ -1270,7 +1274,7 @@ function bindEvents() {
 
   if (refs.miniOpenArea) {
     refs.miniOpenArea.addEventListener("click", () => {
-      setPlayerOpen(true);
+      setPlayerOpen(!isPlayerOpen());
     });
   }
 
