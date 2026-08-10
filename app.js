@@ -49,6 +49,21 @@ const moodQueries = {
   Romantica: "romantic songs playlist"
 };
 
+const fallbackCatalog = [
+  { title: "Eminem - Lose Yourself", subtitle: "Hip Hop", youtubeId: "xFYQQPAOz7Y", thumbnail: "https://i.ytimg.com/vi/xFYQQPAOz7Y/hqdefault.jpg", moods: ["Energia", "Concentracion"] },
+  { title: "Eminem - Mockingbird", subtitle: "Hip Hop", youtubeId: "S9bCLPwzSC0", thumbnail: "https://i.ytimg.com/vi/S9bCLPwzSC0/hqdefault.jpg", moods: ["Triste", "Relax"] },
+  { title: "Eminem - Without Me", subtitle: "Hip Hop", youtubeId: "YVkUvmDQ3HY", thumbnail: "https://i.ytimg.com/vi/YVkUvmDQ3HY/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Eminem - Not Afraid", subtitle: "Hip Hop", youtubeId: "j5-yKhDd64s", thumbnail: "https://i.ytimg.com/vi/j5-yKhDd64s/hqdefault.jpg", moods: ["Energia", "Concentracion"] },
+  { title: "Eminem - Till I Collapse", subtitle: "Hip Hop", youtubeId: "Pi3_Zs-oRUo", thumbnail: "https://i.ytimg.com/vi/Pi3_Zs-oRUo/hqdefault.jpg", moods: ["Energia", "Fiesta"] },
+  { title: "Martin Garrix - Animals", subtitle: "EDM", youtubeId: "gCYcHz2k5x0", thumbnail: "https://i.ytimg.com/vi/gCYcHz2k5x0/hqdefault.jpg", moods: ["Energia", "Fiesta"] },
+  { title: "Martin Garrix - High On Life", subtitle: "EDM", youtubeId: "Lpjcm1F8tY8", thumbnail: "https://i.ytimg.com/vi/Lpjcm1F8tY8/hqdefault.jpg", moods: ["Energia", "Relax"] },
+  { title: "The Weeknd - Blinding Lights", subtitle: "Pop", youtubeId: "4NRXx6U8ABQ", thumbnail: "https://i.ytimg.com/vi/4NRXx6U8ABQ/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Coldplay - Yellow", subtitle: "Rock", youtubeId: "yKNxeF4KMsY", thumbnail: "https://i.ytimg.com/vi/yKNxeF4KMsY/hqdefault.jpg", moods: ["Relax", "Romantica"] },
+  { title: "Kina - Get You The Moon", subtitle: "Lo-fi / Chill", youtubeId: "AF1M6E2F8_8", thumbnail: "https://i.ytimg.com/vi/AF1M6E2F8_8/hqdefault.jpg", moods: ["Relax", "Concentracion"] },
+  { title: "AURORA - Runaway", subtitle: "Alternative", youtubeId: "d_HlPboLRL8", thumbnail: "https://i.ytimg.com/vi/d_HlPboLRL8/hqdefault.jpg", moods: ["Triste", "Relax"] },
+  { title: "Ruelle - I Get To Love You", subtitle: "Romantic", youtubeId: "15a49Hik4FQ", thumbnail: "https://i.ytimg.com/vi/15a49Hik4FQ/hqdefault.jpg", moods: ["Romantica", "Triste"] }
+];
+
 const invidiousInstances = [
   "https://invidious.fdn.fr",
   "https://invidious.privacyredirect.com",
@@ -334,6 +349,36 @@ function renderAll() {
   renderQueue();
 }
 
+function normalizeCatalogItem(item) {
+  return {
+    ...item,
+    id: item.id || `fallback-${item.youtubeId}`,
+    kind: item.kind || "youtube",
+    title: normalizeText(item.title || "Sin titulo"),
+    subtitle: normalizeText(item.subtitle || "")
+  };
+}
+
+function getFallbackCatalogForMood(mood) {
+  const filtered = fallbackCatalog.filter((item) => item.moods.includes(mood));
+  const source = filtered.length ? filtered : fallbackCatalog;
+  return source.map(normalizeCatalogItem);
+}
+
+function searchFallbackCatalog(query) {
+  const q = normalizeText(query).toLowerCase();
+  const scored = fallbackCatalog
+    .map((item) => {
+      const hay = `${item.title} ${item.subtitle} ${item.moods.join(" ")}`.toLowerCase();
+      const score = !q ? 1 : hay.includes(q) ? 3 : keywordsFromTitle(item.title).some((k) => q.includes(k) || k.includes(q)) ? 2 : 0;
+      return { item: normalizeCatalogItem(item), score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.item);
+  return scored.length ? scored : fallbackCatalog.slice(0, 8).map(normalizeCatalogItem);
+}
+
 function setResultsVisible(visible) {
   if (!refs.resultsSection) return;
   refs.resultsSection.hidden = !visible;
@@ -419,10 +464,14 @@ async function loadDiscovery() {
       renderDiscovery(sliced);
       return;
     }
-    renderDiscovery(state.discoverCache[state.mode].online || []);
-  } catch (_) {
+    renderDiscovery(state.discoverCache[state.mode].online.length ? state.discoverCache[state.mode].online : getFallbackCatalogForMood(state.selectedMood));
+  } catch (error) {
     if (requestId !== state.discoverRequestId) return;
-    renderDiscovery(state.discoverCache[state.mode].online || []);
+    if (String(error?.status || error?.code || "") === "429" || /quota/i.test(String(error?.message || ""))) {
+      renderDiscovery(getFallbackCatalogForMood(state.selectedMood));
+      return;
+    }
+    renderDiscovery(state.discoverCache[state.mode].online.length ? state.discoverCache[state.mode].online : getFallbackCatalogForMood(state.selectedMood));
   }
 }
 
@@ -898,12 +947,13 @@ async function searchOnline() {
     setResultsVisible(true);
     renderLibrary(results);
   } catch (err) {
+    const fallback = searchFallbackCatalog(query);
+    state.library[state.mode].online = fallback;
     setResultsVisible(true);
-    renderLibrary([]);
-    const li = document.createElement("li");
-    li.className = "track-item";
-    li.textContent = "No se pudo consultar YouTube ahora. Reintenta en unos segundos.";
-    refs.libraryList.appendChild(li);
+    renderLibrary(fallback);
+    updateOnlineHint(/quota|429/i.test(String(err?.message || ""))
+      ? "Cuota de YouTube agotada; mostrando sugerencias locales hasta que se restablezca."
+      : "Mostrando sugerencias locales de respaldo.");
   } finally {
     refs.onlineSearchBtn.disabled = false;
     refs.onlineSearchBtn.textContent = "Buscar";
@@ -960,7 +1010,7 @@ async function fetchYouTubeResults(query) {
     }
   }
 
-  throw new Error("No API instances available");
+  throw Object.assign(new Error("No API instances available"), { code: 503 });
 }
 
 async function fetchYouTubeResultsViaApiKey(query, apiKey) {
@@ -968,7 +1018,10 @@ async function fetchYouTubeResultsViaApiKey(query, apiKey) {
     + `?part=snippet&type=video&maxResults=25&q=${encodeURIComponent(query)}`
     + `&key=${encodeURIComponent(apiKey)}`;
   const searchRes = await fetch(searchUrl);
-  if (!searchRes.ok) return [];
+  if (!searchRes.ok) {
+    const payload = await searchRes.text().catch(() => "");
+    throw Object.assign(new Error(payload || `YouTube API error ${searchRes.status}`), { status: searchRes.status });
+  }
 
   const searchData = await searchRes.json();
   const items = Array.isArray(searchData.items) ? searchData.items : [];
