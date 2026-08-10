@@ -60,7 +60,15 @@
       </div>
     </section>
 
-    <section class="now-playing panel">
+    <section class="discover panel" id="discoverSection">
+      <div class="discover-head">
+        <h2>Descubrir</h2>
+        <div id="moodChips" class="mood-chips"></div>
+      </div>
+      <ul id="discoverList" class="discover-list" aria-live="polite"></ul>
+    </section>
+
+    <section id="nowPlayingSection" class="now-playing panel" hidden>
       <div class="media-zone">
         <div id="videoFrameWrap" class="video-wrap" hidden>
           <div id="youtubePlayer"></div>

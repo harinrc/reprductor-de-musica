@@ -30,7 +30,18 @@ const state = {
     freqData: null,
     particles: [],
     lastTime: 0
-  }
+  },
+  selectedMood: "Energia"
+};
+
+const moods = ["Energia", "Relax", "Concentracion", "Fiesta", "Triste", "Romantica"];
+const moodQueries = {
+  Energia: "workout music mix",
+  Relax: "chill lofi mix",
+  Concentracion: "focus instrumental music",
+  Fiesta: "party hits 2026",
+  Triste: "sad songs playlist",
+  Romantica: "romantic songs playlist"
 };
 
 const invidiousInstances = [
@@ -84,7 +95,11 @@ const refs = {
   localQuery: document.getElementById("localQuery"),
   onlineSearchBtn: document.getElementById("onlineSearchBtn"),
   onlineApiRow: document.getElementById("onlineApiRow"),
+  discoverSection: document.getElementById("discoverSection"),
+  discoverList: document.getElementById("discoverList"),
+  moodChips: document.getElementById("moodChips"),
   localPicker: document.getElementById("localPicker"),
+  nowPlayingSection: document.getElementById("nowPlayingSection"),
   libraryList: document.getElementById("libraryList"),
   queueList: document.getElementById("queueList"),
   htmlPlayer: document.getElementById("htmlPlayer"),
@@ -184,6 +199,7 @@ function setMode(mode) {
   refs.modeMusic.classList.toggle("is-active", mode === "music");
   refs.modeVideo.classList.toggle("is-active", mode === "video");
   updateMediaSurface();
+  loadDiscovery();
   renderAll();
 }
 
@@ -200,6 +216,7 @@ function setSource(source) {
   refs.localSearchRow.hidden = source !== "local";
   updateOnlineHintByContext();
   updateMediaSurface();
+  loadDiscovery();
   renderAll();
 }
 
@@ -307,6 +324,115 @@ function renderQueue() {
 function renderAll() {
   renderLibrary();
   renderQueue();
+}
+
+function renderMoodChips() {
+  if (!refs.moodChips) return;
+  refs.moodChips.innerHTML = "";
+  moods.forEach((mood) => {
+    const btn = document.createElement("button");
+    btn.className = "mood-chip" + (mood === state.selectedMood ? " is-active" : "");
+    btn.textContent = mood;
+    btn.addEventListener("click", () => {
+      state.selectedMood = mood;
+      renderMoodChips();
+      loadDiscovery();
+    });
+    refs.moodChips.appendChild(btn);
+  });
+}
+
+function renderDiscovery(items) {
+  if (!refs.discoverList) return;
+  refs.discoverList.innerHTML = "";
+
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "track-item";
+    empty.textContent = "Sin sugerencias por ahora.";
+    refs.discoverList.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "discover-card";
+    li.innerHTML = `
+      <img src="${escapeHtml(item.thumbnail || "icon-192.svg")}" alt="Portada" loading="lazy" />
+      <div class="meta">
+        <div class="title">${escapeHtml(item.title)}</div>
+        <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+      </div>
+    `;
+    li.addEventListener("click", () => {
+      state.library[state.mode][state.source] = items;
+      renderLibrary(items);
+      startSmartPlayback(item, items);
+    });
+    refs.discoverList.appendChild(li);
+  });
+}
+
+async function loadDiscovery() {
+  if (!refs.discoverSection) return;
+
+  if (state.source === "local") {
+    const local = state.library[state.mode].local;
+    renderDiscovery(local.slice(0, 18));
+    return;
+  }
+
+  const query = moodQueries[state.selectedMood] || "top music";
+  try {
+    const results = await fetchYouTubeResults(query);
+    renderDiscovery(results.slice(0, 18));
+  } catch (_) {
+    renderDiscovery([]);
+  }
+}
+
+function keywordsFromTitle(text) {
+  const stop = new Set(["official", "video", "lyrics", "audio", "ft", "feat", "the", "and", "mix"]);
+  return normalizeText(text)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((x) => x.length > 2 && !stop.has(x));
+}
+
+function similarityScore(a, b) {
+  const sa = new Set(keywordsFromTitle(a.title));
+  const sb = new Set(keywordsFromTitle(b.title));
+  let overlap = 0;
+  sa.forEach((k) => {
+    if (sb.has(k)) overlap += 1;
+  });
+  return overlap;
+}
+
+function buildSmartQueue(seed, candidates) {
+  const filtered = candidates.filter((x) => x.id !== seed.id);
+  filtered.sort((a, b) => similarityScore(seed, b) - similarityScore(seed, a));
+  return [seed, ...filtered.slice(0, 24)];
+}
+
+async function startSmartPlayback(item, sourceItems = null) {
+  const base = sourceItems || nowLibrary();
+  const queue = buildSmartQueue(item, base);
+  state.queue[state.mode][state.source] = queue;
+  setNowIndex(0);
+  renderQueue();
+  playItem(item, 0);
+
+  if (item.kind === "youtube") {
+    const rec = await fetchRecommendations(item.youtubeId);
+    if (rec.length) {
+      const existing = new Set(nowQueue().map((x) => x.id));
+      rec.forEach((r) => {
+        if (!existing.has(r.id)) nowQueue().push(r);
+      });
+      renderQueue();
+    }
+  }
 }
 
 function ensureVisualizerSize() {
@@ -476,6 +602,8 @@ function playItem(item, queuePosition = null) {
 
   refs.nowTitle.textContent = item.title;
   refs.nowSubtitle.textContent = item.subtitle || "";
+  if (refs.nowPlayingSection) refs.nowPlayingSection.hidden = false;
+  if (refs.discoverSection) refs.discoverSection.hidden = true;
   updateArtworkUi(item);
   updateMiniPlayer(item);
   applyDynamicTheme(item);
@@ -735,6 +863,7 @@ async function searchOnline() {
     }
     state.library[state.mode].online = results;
     renderLibrary(results);
+    if (refs.discoverSection) refs.discoverSection.hidden = true;
   } catch (err) {
     renderLibrary([]);
     const li = document.createElement("li");
@@ -1084,8 +1213,7 @@ function bindEvents() {
     if (!item) return;
 
     if (action === "play") {
-      enqueue(item);
-      playItem(item, nowQueue().length - 1);
+      startSmartPlayback(item);
     }
 
     if (action === "add") {
@@ -1275,8 +1403,12 @@ function bootstrap() {
 
   bindEvents();
   initAudioVisualizer();
+  renderMoodChips();
   setMode("music");
   setSource("local");
+  if (refs.nowPlayingSection) refs.nowPlayingSection.hidden = true;
+  if (refs.discoverSection) refs.discoverSection.hidden = false;
+  loadDiscovery();
   setMediaActionHandlers();
   tick();
 

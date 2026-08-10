@@ -122,6 +122,85 @@ body {
   order: 4;
 }
 
+.discover {
+  order: 2;
+}
+
+.discover-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.discover-head h2 {
+  margin: 0;
+}
+
+.mood-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mood-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #131a23;
+  color: var(--ink);
+  padding: 7px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.mood-chip.is-active {
+  background: rgba(var(--aura-rgb), 0.16);
+  border-color: rgba(var(--aura-rgb), 0.42);
+}
+
+.discover-list {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.discover-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #121722, #0d1219);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.discover-card img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+}
+
+.discover-card .meta {
+  padding: 10px;
+}
+
+.discover-card .title {
+  font-weight: 600;
+  line-height: 1.3;
+  font-size: 0.92rem;
+  max-height: 2.4em;
+  overflow: hidden;
+}
+
+.discover-card .sub {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
 .topbar h1 {
   margin: 0;
   font-family: "Bricolage Grotesque", "Segoe UI", sans-serif;
