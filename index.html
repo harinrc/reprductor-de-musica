@@ -49,18 +49,6 @@
       </div>
     </section>
 
-    <section class="content-grid">
-      <article class="panel">
-        <h2>Resultados / Biblioteca</h2>
-        <ul id="libraryList" class="track-list" aria-live="polite"></ul>
-      </article>
-
-      <article class="panel">
-        <h2>Cola de reproduccion</h2>
-        <ul id="queueList" class="track-list" aria-live="polite"></ul>
-      </article>
-    </section>
-
     <section class="now-playing panel">
       <div class="media-zone">
         <div id="videoFrameWrap" class="video-wrap" hidden>
@@ -69,6 +57,7 @@
         </div>
         <div id="musicArt" class="music-art">
           <img id="nowArt" alt="Caratula actual" hidden />
+          <canvas id="visualizerCanvas" aria-hidden="true"></canvas>
           <div class="pulse" id="artPulse"></div>
         </div>
       </div>
@@ -126,6 +115,18 @@
         <button id="repeatBtn" class="chip" aria-pressed="false">Repeat off</button>
         <button id="autoplayBtn" class="chip is-active" aria-pressed="true">Autoplay on</button>
       </div>
+    </section>
+
+    <section class="content-grid">
+      <article class="panel">
+        <h2>Resultados / Biblioteca</h2>
+        <ul id="libraryList" class="track-list" aria-live="polite"></ul>
+      </article>
+
+      <article class="panel">
+        <h2>Cola de reproduccion</h2>
+        <ul id="queueList" class="track-list" aria-live="polite"></ul>
+      </article>
     </section>
   </main>
 

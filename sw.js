@@ -1,4 +1,4 @@
-const CACHE = "duoplayer-v4";
+const CACHE = "duoplayer-v5";
 const ASSETS = [
   "./",
   "./index.html",

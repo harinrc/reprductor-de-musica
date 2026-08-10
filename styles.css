@@ -63,6 +63,14 @@ body {
   gap: 14px;
 }
 
+.now-playing {
+  order: 3;
+}
+
+.content-grid {
+  order: 4;
+}
+
 .topbar h1 {
   margin: 0;
   font-family: "Bricolage Grotesque", "Segoe UI", sans-serif;
@@ -106,7 +114,7 @@ body {
 
 .content-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.4fr 1fr;
   gap: 14px;
 }
 
@@ -114,31 +122,31 @@ body {
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 300px;
+  max-height: 430px;
   overflow: auto;
-  display: grid;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
 }
 
 .track-item {
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 8px;
   display: grid;
-  gap: 6px;
-  background: #11161e;
+  gap: 8px;
+  background: transparent;
 }
 
 .track-head {
   display: grid;
-  grid-template-columns: 58px 1fr;
+  grid-template-columns: 64px 1fr;
   gap: 10px;
   align-items: center;
 }
 
 .thumb {
-  width: 58px;
-  height: 58px;
+  width: 64px;
+  height: 64px;
   border-radius: 12px;
   object-fit: cover;
   border: 1px solid var(--line);
@@ -155,6 +163,7 @@ body {
 
 .track-item .title {
   font-weight: 600;
+  line-height: 1.24;
 }
 
 .track-item .sub {
@@ -165,6 +174,11 @@ body {
 .track-item .actions {
   display: flex;
   gap: 8px;
+}
+
+.track-item .actions .ghost {
+  min-width: 42px;
+  font-weight: 700;
 }
 
 button,
@@ -242,6 +256,7 @@ input[type="password"] {
 .now-playing {
   display: grid;
   gap: 12px;
+  padding: 16px;
 }
 
 .media-zone {
@@ -293,6 +308,7 @@ input[type="password"] {
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--line);
+  position: relative;
 }
 
 #nowArt {
@@ -300,6 +316,16 @@ input[type="password"] {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+#visualizerCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.92;
 }
 
 .pulse {
@@ -334,6 +360,7 @@ input[type="password"] {
   display: grid;
   place-items: center;
   position: relative;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.42);
 }
 
 .media-btn svg {

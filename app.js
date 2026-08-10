@@ -21,7 +21,16 @@ const state = {
   ytPlayer: null,
   isPlaying: false,
   youtubeApiKey: "",
-  pendingYouTubeItem: null
+  pendingYouTubeItem: null,
+  visualizer: {
+    ctx: null,
+    audioCtx: null,
+    analyser: null,
+    sourceNode: null,
+    freqData: null,
+    particles: [],
+    lastTime: 0
+  }
 };
 
 const invidiousInstances = [
@@ -82,6 +91,7 @@ const refs = {
   videoFrameWrap: document.getElementById("videoFrameWrap"),
   musicArt: document.getElementById("musicArt"),
   nowArt: document.getElementById("nowArt"),
+  visualizerCanvas: document.getElementById("visualizerCanvas"),
   artPulse: document.getElementById("artPulse"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
@@ -292,6 +302,134 @@ function renderAll() {
   renderQueue();
 }
 
+function ensureVisualizerSize() {
+  const canvas = refs.visualizerCanvas;
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const targetW = Math.floor(rect.width * dpr);
+  const targetH = Math.floor(rect.height * dpr);
+  if (canvas.width === targetW && canvas.height === targetH) return;
+  canvas.width = targetW;
+  canvas.height = targetH;
+}
+
+function initAudioVisualizer() {
+  if (!refs.visualizerCanvas) return;
+  state.visualizer.ctx = refs.visualizerCanvas.getContext("2d", { alpha: true });
+  ensureVisualizerSize();
+  window.addEventListener("resize", ensureVisualizerSize);
+}
+
+function connectLocalAudioAnalyser() {
+  if (state.visualizer.sourceNode || !window.AudioContext) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const audioCtx = new AC();
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.84;
+  const source = audioCtx.createMediaElementSource(refs.htmlPlayer);
+  source.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  state.visualizer.audioCtx = audioCtx;
+  state.visualizer.analyser = analyser;
+  state.visualizer.sourceNode = source;
+  state.visualizer.freqData = new Uint8Array(analyser.frequencyBinCount);
+}
+
+function spawnVisualizerParticle(energy, width, height, rgb) {
+  if (energy < 0.15 || Math.random() > 0.34) return;
+  const y = height * (0.25 + Math.random() * 0.55);
+  state.visualizer.particles.push({
+    x: width * 0.5,
+    y,
+    vx: (Math.random() - 0.5) * 1.6,
+    vy: -0.5 - energy * 2.8,
+    life: 1,
+    size: 1.2 + Math.random() * 2.6,
+    rgb
+  });
+  if (state.visualizer.particles.length > 220) {
+    state.visualizer.particles.splice(0, state.visualizer.particles.length - 220);
+  }
+}
+
+function drawVisualizerFrame() {
+  const ctx = state.visualizer.ctx;
+  const canvas = refs.visualizerCanvas;
+  if (!ctx || !canvas || state.mode !== "music") return;
+
+  ensureVisualizerSize();
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!width || !height) return;
+
+  ctx.clearRect(0, 0, width, height);
+
+  const aura = getComputedStyle(document.documentElement).getPropertyValue("--aura-rgb").trim() || "123,224,255";
+  const rgb = aura.split(",").map((x) => Number(x.trim()) || 120);
+
+  let energy = 0.08;
+  let spectrum = null;
+  if (state.current?.kind === "local" && state.visualizer.analyser && state.visualizer.freqData) {
+    if (state.visualizer.audioCtx && state.visualizer.audioCtx.state === "suspended") {
+      state.visualizer.audioCtx.resume().catch(() => null);
+    }
+    state.visualizer.analyser.getByteFrequencyData(state.visualizer.freqData);
+    spectrum = state.visualizer.freqData;
+    let sum = 0;
+    for (let i = 0; i < spectrum.length; i += 1) sum += spectrum[i];
+    energy = Math.min(1, (sum / spectrum.length) / 180);
+  } else if (state.current?.kind === "youtube" && state.isPlaying) {
+    const t = performance.now() * 0.001;
+    energy = 0.2 + Math.abs(Math.sin(t * 1.8)) * 0.35 + Math.random() * 0.12;
+  }
+
+  const lineY = height * 0.68;
+  const bars = 72;
+  const gap = width / bars;
+
+  for (let i = 0; i < bars; i += 1) {
+    const x = i * gap + gap * 0.5;
+    const bin = spectrum ? spectrum[Math.floor((i / bars) * spectrum.length)] / 255 : Math.random() * energy;
+    const mag = spectrum ? bin : Math.max(0.06, bin);
+    const barH = (height * 0.34) * (0.18 + mag);
+    const alpha = 0.25 + mag * 0.6;
+    ctx.strokeStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+    ctx.lineWidth = Math.max(1.2, gap * 0.55);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x, lineY + barH * 0.08);
+    ctx.lineTo(x, lineY - barH);
+    ctx.stroke();
+  }
+
+  spawnVisualizerParticle(energy, width, height, rgb);
+  for (let i = state.visualizer.particles.length - 1; i >= 0; i -= 1) {
+    const p = state.visualizer.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy -= 0.004;
+    p.life -= 0.012;
+    if (p.life <= 0) {
+      state.visualizer.particles.splice(i, 1);
+      continue;
+    }
+    ctx.fillStyle = `rgba(${p.rgb[0]}, ${p.rgb[1]}, ${p.rgb[2]}, ${0.55 * p.life})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const glow = ctx.createRadialGradient(width * 0.5, height * 0.62, 6, width * 0.5, height * 0.62, width * 0.5);
+  glow.addColorStop(0, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${0.2 + energy * 0.35})`);
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+}
+
 function findInLibraryById(id) {
   return nowLibrary().find((x) => x.id === id) || null;
 }
@@ -401,6 +539,8 @@ function sampleImageColor(img) {
 
 function playLocal(item) {
   if (!item.url) return;
+
+  connectLocalAudioAnalyser();
 
   refs.htmlPlayer.pause();
   refs.htmlPlayer.src = item.url;
@@ -1059,6 +1199,8 @@ function tick() {
     updateTimeUi(current, duration);
   }
 
+  drawVisualizerFrame();
+
   requestAnimationFrame(tick);
 }
 
@@ -1082,6 +1224,7 @@ function bootstrap() {
   }
 
   bindEvents();
+  initAudioVisualizer();
   setMode("music");
   setSource("local");
   setMediaActionHandlers();
