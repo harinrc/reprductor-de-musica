@@ -172,7 +172,11 @@ function setSource(source) {
   refs.sourceLocal.classList.toggle("is-active", source === "local");
   refs.sourceOnline.classList.toggle("is-active", source === "online");
   refs.onlineSearchRow.hidden = source !== "online";
-  refs.onlineApiRow.hidden = source !== "online" || !isConfigMode();
+  if (refs.onlineApiRow) {
+    const showConfigRow = source === "online" && isConfigMode();
+    refs.onlineApiRow.hidden = !showConfigRow;
+    refs.onlineApiRow.style.display = showConfigRow ? "flex" : "none";
+  }
   refs.localSearchRow.hidden = source !== "local";
   updateOnlineHintByContext();
   updateMediaSurface();
@@ -773,19 +777,23 @@ function bindEvents() {
     if (e.key === "Enter") searchOnline();
   });
 
-  refs.saveApiKeyBtn.addEventListener("click", () => {
-    const key = refs.ytApiKeyInput.value.trim();
-    state.youtubeApiKey = key;
-    saveApiKey(key);
-    updateOnlineHintByContext();
-  });
+  if (refs.saveApiKeyBtn && refs.ytApiKeyInput) {
+    refs.saveApiKeyBtn.addEventListener("click", () => {
+      const key = refs.ytApiKeyInput.value.trim();
+      state.youtubeApiKey = key;
+      saveApiKey(key);
+      updateOnlineHintByContext();
+    });
+  }
 
-  refs.clearApiKeyBtn.addEventListener("click", () => {
-    refs.ytApiKeyInput.value = "";
-    state.youtubeApiKey = "";
-    saveApiKey("");
-    updateOnlineHintByContext();
-  });
+  if (refs.clearApiKeyBtn && refs.ytApiKeyInput) {
+    refs.clearApiKeyBtn.addEventListener("click", () => {
+      refs.ytApiKeyInput.value = "";
+      state.youtubeApiKey = "";
+      saveApiKey("");
+      updateOnlineHintByContext();
+    });
+  }
 
   refs.localPicker.addEventListener("change", (e) => loadLocalFiles(e.target.files));
   refs.localQuery.addEventListener("input", filterLocal);
@@ -941,7 +949,14 @@ function tick() {
 
 function bootstrap() {
   state.youtubeApiKey = String(appConfig.youtubeApiKey || "").trim() || loadApiKey();
-  refs.ytApiKeyInput.value = state.youtubeApiKey;
+  if (refs.ytApiKeyInput) {
+    refs.ytApiKeyInput.value = state.youtubeApiKey;
+  }
+
+  if (refs.onlineApiRow && !isConfigMode()) {
+    refs.onlineApiRow.hidden = true;
+    refs.onlineApiRow.style.display = "none";
+  }
 
   if (location.protocol === "file:") {
     const warn = document.createElement("li");
