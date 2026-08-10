@@ -91,6 +91,9 @@
       </div>
 
       <div class="controls">
+        <button id="shuffleControlBtn" class="media-btn" aria-label="Aleatorio" title="Aleatorio">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h4v4h-2V6.41l-4.29 4.3-1.42-1.42 4.3-4.29H17V3zM3 7h5l2.29 2.29-1.42 1.42L7.17 9H3V7zm0 8h4.17l8.12-8.12 1.42 1.42L8.59 16H3v-1zm14 2h.59l-4.3-4.29 1.42-1.42 4.29 4.3V15h2v4h-4v-2z"/></svg>
+        </button>
         <button id="prevBtn" class="media-btn" aria-label="Anterior" title="Anterior">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zm3.5 7 8.5 7V5z"/></svg>
         </button>
@@ -100,9 +103,6 @@
         </button>
         <button id="playBtn" class="media-btn is-primary" aria-label="Reproducir" title="Reproducir">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-        </button>
-        <button id="pauseBtn" class="media-btn" aria-label="Pausar" title="Pausar">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
         </button>
         <button id="fwdBtn" class="media-btn" aria-label="Avanzar 10 segundos" title="Avanzar 10 segundos">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2l5 4-5 4V7a6 6 0 0 0 0 12 6 6 0 0 0 5.65-4h2.09A8 8 0 0 1 12 21a8 8 0 0 1 0-16z"/></svg>
@@ -134,13 +134,19 @@
           </select>
         </label>
 
-        <button id="shuffleBtn" class="chip" aria-pressed="false">Shuffle off</button>
         <button id="repeatBtn" class="chip" aria-pressed="false">Repeat off</button>
         <button id="autoplayBtn" class="chip is-active" aria-pressed="true">Autoplay on</button>
+        <button id="shareBtn" class="chip" aria-label="Compartir pista actual">Compartir</button>
       </div>
 
       <article class="panel in-player-queue">
-        <h2>Cola de reproduccion</h2>
+        <div class="queue-head">
+          <h2>Cola de reproduccion</h2>
+          <div id="queueModeTabs" class="queue-mode-tabs" hidden>
+            <button id="queueModeRelated" class="chip is-active" data-queue-view="related">Relacionadas</button>
+            <button id="queueModeResults" class="chip" data-queue-view="results">Resultados</button>
+          </div>
+        </div>
         <ul id="queueList" class="track-list" aria-live="polite"></ul>
       </article>
     </section>

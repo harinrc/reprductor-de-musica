@@ -36,6 +36,10 @@ const state = {
   discoverCache: {
     music: { online: [], local: [] },
     video: { online: [], local: [] }
+  },
+  onlineQueue: {
+    music: { related: [], results: [], view: "related" },
+    video: { related: [], results: [], view: "related" }
   }
 };
 
@@ -140,10 +144,13 @@ const refs = {
   closePlayerBtn: document.getElementById("closePlayerBtn"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
+  queueModeTabs: document.getElementById("queueModeTabs"),
+  queueModeRelated: document.getElementById("queueModeRelated"),
+  queueModeResults: document.getElementById("queueModeResults"),
+  shuffleControlBtn: document.getElementById("shuffleControlBtn"),
   prevBtn: document.getElementById("prevBtn"),
   backBtn: document.getElementById("backBtn"),
   playBtn: document.getElementById("playBtn"),
-  pauseBtn: document.getElementById("pauseBtn"),
   fwdBtn: document.getElementById("fwdBtn"),
   nextBtn: document.getElementById("nextBtn"),
   seekBar: document.getElementById("seekBar"),
@@ -151,9 +158,9 @@ const refs = {
   durationTime: document.getElementById("durationTime"),
   volumeBar: document.getElementById("volumeBar"),
   speedSelect: document.getElementById("speedSelect"),
-  shuffleBtn: document.getElementById("shuffleBtn"),
   repeatBtn: document.getElementById("repeatBtn"),
-  autoplayBtn: document.getElementById("autoplayBtn")
+  autoplayBtn: document.getElementById("autoplayBtn"),
+  shareBtn: document.getElementById("shareBtn")
 };
 
 function nowQueue() {
@@ -170,6 +177,103 @@ function nowIndex() {
 
 function setNowIndex(value) {
   state.index[state.mode][state.source] = value;
+}
+
+const PLAY_ICON = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M8 5v14l11-7z\"/></svg>";
+const PAUSE_ICON = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M7 5h4v14H7zm6 0h4v14h-4z\"/></svg>";
+
+function isOnlineQueueMode() {
+  return state.source === "online";
+}
+
+function onlineQueueState() {
+  return state.onlineQueue[state.mode];
+}
+
+function getActiveQueueView() {
+  if (!isOnlineQueueMode()) return "related";
+  return onlineQueueState().view || "related";
+}
+
+function setActiveQueueView(view) {
+  if (!isOnlineQueueMode()) return;
+  const next = view === "results" ? "results" : "related";
+  onlineQueueState().view = next;
+  updateQueueViewUi();
+  renderQueue();
+}
+
+function updateQueueViewUi() {
+  if (!refs.queueModeTabs || !refs.queueModeRelated || !refs.queueModeResults) return;
+  const show = isOnlineQueueMode();
+  refs.queueModeTabs.hidden = !show;
+  if (!show) return;
+  const view = getActiveQueueView();
+  refs.queueModeRelated.classList.toggle("is-active", view === "related");
+  refs.queueModeResults.classList.toggle("is-active", view === "results");
+}
+
+function queueItemsForRender() {
+  if (!isOnlineQueueMode()) {
+    return nowQueue();
+  }
+
+  const q = onlineQueueState();
+  return getActiveQueueView() === "results" ? q.results : q.related;
+}
+
+function updatePrimaryPlayButton() {
+  if (!refs.playBtn) return;
+  const playing = Boolean(state.current) && state.isPlaying;
+  refs.playBtn.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+  refs.playBtn.setAttribute("aria-label", playing ? "Pausar" : "Reproducir");
+  refs.playBtn.title = playing ? "Pausar" : "Reproducir";
+}
+
+function updateShuffleUi() {
+  if (refs.shuffleControlBtn) {
+    refs.shuffleControlBtn.classList.toggle("is-active", state.shuffle);
+    refs.shuffleControlBtn.setAttribute("aria-pressed", String(state.shuffle));
+  }
+}
+
+function currentShareUrl() {
+  if (!state.current) return "";
+  if (state.current.kind === "youtube" && state.current.youtubeId) {
+    return `https://www.youtube.com/watch?v=${encodeURIComponent(state.current.youtubeId)}`;
+  }
+  return "";
+}
+
+async function shareCurrentTrack() {
+  const url = currentShareUrl();
+  if (!url || !state.current) return;
+  const payload = {
+    title: state.current.title || "Reproductor Duo",
+    text: state.current.subtitle || "",
+    url
+  };
+
+  if (navigator.share) {
+    try {
+      await navigator.share(payload);
+      return;
+    } catch (_) {
+      // Fall back to copy.
+    }
+  }
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      updateOnlineHint("Enlace copiado al portapapeles.");
+      return;
+    } catch (_) {
+      // Fall back below.
+    }
+  }
+
+  window.prompt("Copia este enlace:", url);
 }
 
 function formatTime(sec) {
@@ -427,7 +531,7 @@ function renderLibrary(items = null) {
 }
 
 function renderQueue() {
-  const queue = nowQueue();
+  const queue = queueItemsForRender();
   const idx = nowIndex();
   refs.queueList.innerHTML = "";
 
@@ -442,7 +546,9 @@ function renderQueue() {
   queue.forEach((item, i) => {
     const li = document.createElement("li");
     li.className = "track-item";
-    if (i === idx) {
+    const activeInRelated = nowQueue()[idx]?.id === item.id;
+    const activeInResults = state.current?.id === item.id;
+    if (activeInRelated || activeInResults) {
       li.style.border = "2px solid #0f4c5c";
     }
     const thumb = item.thumbnail
@@ -467,6 +573,7 @@ function renderQueue() {
 
 function renderAll() {
   renderLibrary();
+  updateQueueViewUi();
   renderQueue();
 }
 
@@ -664,12 +771,20 @@ function buildOnlineQueue(seed, candidates) {
 async function startSmartPlayback(item, sourceItems = null) {
   const base = sourceItems || nowLibrary();
   const onlineYoutube = state.source === "online" && item.kind === "youtube";
-  const queue = onlineYoutube
-    ? buildOnlineQueue(item, base)
-    : buildSmartQueue(item, base);
 
-  state.queue[state.mode][state.source] = queue.length ? queue : [item];
+  if (onlineYoutube) {
+    const qState = onlineQueueState();
+    qState.results = base.length ? [...base] : [item];
+    qState.related = buildOnlineQueue(item, qState.results);
+    qState.view = "related";
+    state.queue[state.mode][state.source] = qState.related.length ? qState.related : [item];
+  } else {
+    const queue = buildSmartQueue(item, base);
+    state.queue[state.mode][state.source] = queue.length ? queue : [item];
+  }
+
   setNowIndex(0);
+  updateQueueViewUi();
   renderQueue();
   playItem(item, 0);
 
@@ -679,7 +794,9 @@ async function startSmartPlayback(item, sourceItems = null) {
       const existing = new Set(nowQueue().map((x) => x.id));
       const fresh = rec.filter((r) => !existing.has(r.id));
       if (onlineYoutube) {
-        nowQueue().splice(1, 0, ...fresh.slice(0, 20));
+        const qState = onlineQueueState();
+        qState.related.splice(1, 0, ...fresh.slice(0, 20));
+        state.queue[state.mode][state.source] = qState.related;
       } else {
         fresh.forEach((r) => nowQueue().push(r));
       }
@@ -867,6 +984,7 @@ function playItem(item, queuePosition = null) {
 
   updateMediaSurface();
   updateMediaSession();
+  updatePrimaryPlayButton();
   renderQueue();
 }
 
@@ -996,6 +1114,7 @@ function togglePlay() {
   state.isPlaying = true;
   updateMediaSession();
   if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
+  updatePrimaryPlayButton();
 }
 
 function togglePause() {
@@ -1010,6 +1129,7 @@ function togglePause() {
   state.isPlaying = false;
   updateMediaSession();
   if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
+  updatePrimaryPlayButton();
 }
 
 function seekBy(delta) {
@@ -1553,29 +1673,72 @@ function bindEvents() {
 
     const action = btn.getAttribute("data-action");
     const pos = Number(btn.getAttribute("data-pos"));
-    const queue = nowQueue();
+    const queue = queueItemsForRender();
     if (!Number.isFinite(pos) || pos < 0 || pos >= queue.length) return;
 
+    const item = queue[pos];
+    if (!item) return;
+
     if (action === "jump") {
-      playItem(queue[pos], pos);
+      if (isOnlineQueueMode() && getActiveQueueView() === "results") {
+        startSmartPlayback(item, onlineQueueState().results);
+      } else {
+        const activeIdx = nowQueue().findIndex((x) => x.id === item.id);
+        playItem(item, activeIdx >= 0 ? activeIdx : pos);
+      }
       return;
     }
 
     if (action === "remove") {
-      queue.splice(pos, 1);
-      if (pos <= nowIndex()) {
-        setNowIndex(Math.max(0, nowIndex() - 1));
+      const removeById = (arr) => {
+        const i = arr.findIndex((x) => x.id === item.id);
+        if (i >= 0) arr.splice(i, 1);
+      };
+
+      if (isOnlineQueueMode()) {
+        removeById(onlineQueueState().results);
+        removeById(onlineQueueState().related);
+        removeById(nowQueue());
+      } else {
+        queue.splice(pos, 1);
+      }
+
+      const activeIndex = nowQueue().findIndex((x) => x.id === state.current?.id);
+      if (activeIndex >= 0) {
+        setNowIndex(activeIndex);
+      } else if (nowQueue().length) {
+        setNowIndex(Math.min(nowIndex(), nowQueue().length - 1));
+      } else {
+        setNowIndex(-1);
       }
       renderQueue();
     }
   });
 
+  if (refs.queueModeRelated) {
+    refs.queueModeRelated.addEventListener("click", () => setActiveQueueView("related"));
+  }
+  if (refs.queueModeResults) {
+    refs.queueModeResults.addEventListener("click", () => setActiveQueueView("results"));
+  }
+
   refs.prevBtn.addEventListener("click", previousTrack);
   refs.backBtn.addEventListener("click", () => seekBy(-10));
-  refs.playBtn.addEventListener("click", togglePlay);
-  refs.pauseBtn.addEventListener("click", togglePause);
+  refs.playBtn.addEventListener("click", () => {
+    if (state.isPlaying) {
+      togglePause();
+    } else {
+      togglePlay();
+    }
+  });
   refs.fwdBtn.addEventListener("click", () => seekBy(10));
   refs.nextBtn.addEventListener("click", nextTrack);
+  if (refs.shuffleControlBtn) {
+    refs.shuffleControlBtn.addEventListener("click", () => {
+      state.shuffle = !state.shuffle;
+      updateShuffleUi();
+    });
+  }
 
   if (refs.miniPrev) refs.miniPrev.addEventListener("click", previousTrack);
   if (refs.miniNext) refs.miniNext.addEventListener("click", nextTrack);
@@ -1615,13 +1778,6 @@ function bindEvents() {
     if (state.ytReady) state.ytPlayer.setPlaybackRate(rate);
   });
 
-  refs.shuffleBtn.addEventListener("click", () => {
-    state.shuffle = !state.shuffle;
-    refs.shuffleBtn.classList.toggle("is-active", state.shuffle);
-    refs.shuffleBtn.setAttribute("aria-pressed", String(state.shuffle));
-    refs.shuffleBtn.textContent = state.shuffle ? "Shuffle on" : "Shuffle off";
-  });
-
   refs.repeatBtn.addEventListener("click", () => {
     state.repeat = !state.repeat;
     refs.repeatBtn.classList.toggle("is-active", state.repeat);
@@ -1636,6 +1792,12 @@ function bindEvents() {
     refs.autoplayBtn.textContent = state.autoplay ? "Autoplay on" : "Autoplay off";
   });
 
+  if (refs.shareBtn) {
+    refs.shareBtn.addEventListener("click", () => {
+      shareCurrentTrack();
+    });
+  }
+
   refs.htmlPlayer.addEventListener("timeupdate", () => {
     updateTimeUi(refs.htmlPlayer.currentTime, refs.htmlPlayer.duration);
   });
@@ -1645,11 +1807,13 @@ function bindEvents() {
     state.isPlaying = true;
     updateMediaSession();
     if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
+    updatePrimaryPlayButton();
   });
   refs.htmlPlayer.addEventListener("pause", () => {
     state.isPlaying = false;
     updateMediaSession();
     if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
+    updatePrimaryPlayButton();
   });
 }
 
@@ -1696,11 +1860,13 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
           state.isPlaying = true;
           updateMediaSession();
           if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
+          updatePrimaryPlayButton();
         }
         if (event.data === YT.PlayerState.PAUSED) {
           state.isPlaying = false;
           updateMediaSession();
           if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
+          updatePrimaryPlayButton();
         }
       }
     }
@@ -1741,6 +1907,9 @@ function bootstrap() {
   bindEvents();
   initAudioVisualizer();
   renderMoodChips();
+  updatePrimaryPlayButton();
+  updateShuffleUi();
+  updateQueueViewUi();
   if (refs.miniPlayer) refs.miniPlayer.hidden = false;
   setMode("music");
   setSource("online");
@@ -1752,7 +1921,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=13", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=14", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
