@@ -193,6 +193,127 @@ function parseIsoDurationToSeconds(iso) {
   return h * 3600 + m * 60 + s;
 }
 
+function extractYouTubeIdFromUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./i, "");
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0] || "";
+      return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
+    }
+
+    if (host.endsWith("youtube.com")) {
+      const watchId = url.searchParams.get("v") || "";
+      if (/^[A-Za-z0-9_-]{11}$/.test(watchId)) return watchId;
+      const shortsMatch = /\/shorts\/([A-Za-z0-9_-]{11})/.exec(url.pathname);
+      if (shortsMatch) return shortsMatch[1];
+    }
+  } catch (_) {
+    return "";
+  }
+
+  return "";
+}
+
+function normalizeYouTubeResult(videoId, title, subtitle) {
+  return {
+    id: `yt-${videoId}`,
+    youtubeId: videoId,
+    title: normalizeText(title || "Sin titulo"),
+    subtitle: normalizeText(subtitle || "YouTube - Busqueda web"),
+    thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    kind: "youtube"
+  };
+}
+
+function decodeDuckDuckGoRedirect(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const target = url.searchParams.get("uddg");
+    if (target) return decodeURIComponent(target);
+  } catch (_) {
+    return rawUrl;
+  }
+
+  return rawUrl;
+}
+
+function buildDuckDuckGoQuery(query) {
+  const trimmed = String(query || "").trim();
+  if (!trimmed) return "";
+  return `site:youtube.com ${trimmed}`;
+}
+
+function buildYouTubeSearchQuery(query) {
+  const trimmed = String(query || "").trim();
+  if (!trimmed) return "";
+  return `${trimmed} youtube`;
+}
+
+function buildYouTubeSearchUrl(query) {
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+}
+
+function parseYouTubeHtmlResults(html) {
+  const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  const items = [];
+  const seen = new Set();
+  const titleNodes = Array.from(doc.querySelectorAll('a#video-title'));
+
+  titleNodes.forEach((node) => {
+    const href = node.getAttribute("href") || "";
+    const rawUrl = href.startsWith("http") ? href : `https://www.youtube.com${href}`;
+    const videoId = extractYouTubeIdFromUrl(rawUrl);
+    if (!videoId || seen.has(videoId)) return;
+    seen.add(videoId);
+
+    const title = normalizeText(node.textContent || node.getAttribute("title") || "Sin titulo");
+    const channelNode = node.closest("ytd-video-renderer")?.querySelector("ytd-channel-name a, .yt-simple-endpoint.yt-formatted-string") || null;
+    const channel = normalizeText(channelNode?.textContent || "YouTube");
+    items.push(normalizeYouTubeResult(videoId, title, `${channel} - Busqueda web`));
+  });
+
+  if (items.length) return items;
+
+  const scriptText = doc.documentElement?.innerHTML || "";
+  const fallbackPattern = /"videoId":"([A-Za-z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)"\}\]\}/gs;
+  for (const match of scriptText.matchAll(fallbackPattern)) {
+    const videoId = match[1];
+    const title = match[2];
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    items.push(normalizeYouTubeResult(videoId, title, "YouTube - Busqueda web"));
+  }
+
+  return items;
+}
+
+function parseDuckDuckGoResults(markdown) {
+  const text = String(markdown || "");
+  const items = [];
+  const seen = new Set();
+  const linkPattern = /\[(.*?)\]\((https?:\/\/duckduckgo\.com\/l\/\?uddg=[^)]+)\)/gi;
+
+  for (const match of text.matchAll(linkPattern)) {
+    const title = normalizeText(match[1] || "");
+    const targetUrl = decodeDuckDuckGoRedirect(match[2] || "");
+    const videoId = extractYouTubeIdFromUrl(targetUrl);
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    items.push(normalizeYouTubeResult(videoId, title, "YouTube - Busqueda web"));
+  }
+
+  const directPattern = /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/gi;
+  for (const match of text.matchAll(directPattern)) {
+    const videoId = match[1];
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    items.push(normalizeYouTubeResult(videoId, `YouTube video ${videoId}`, "YouTube - Busqueda web"));
+  }
+
+  return items;
+}
+
 function updateOnlineHint(message) {
   refs.onlineHint.hidden = false;
   refs.onlineHint.textContent = message;
@@ -966,6 +1087,24 @@ async function fetchYouTubeResults(query) {
     if (byApiKey.length) return byApiKey;
   }
 
+  try {
+    const allOriginsResults = await fetchYouTubeResultsViaAllOrigins(query);
+    if (allOriginsResults.length) {
+      return allOriginsResults;
+    }
+  } catch (_) {
+    // Fall through to the other fallbacks below.
+  }
+
+  try {
+    const duckDuckGoResults = await fetchYouTubeResultsViaDuckDuckGo(query);
+    if (duckDuckGoResults.length) {
+      return duckDuckGoResults;
+    }
+  } catch (_) {
+    // Fall through to the other fallbacks below.
+  }
+
   if (hasLocalApi()) {
     try {
       const base = String(appConfig.publicApiBase || "").trim();
@@ -1011,6 +1150,50 @@ async function fetchYouTubeResults(query) {
   }
 
   throw Object.assign(new Error("No API instances available"), { code: 503 });
+}
+
+async function fetchYouTubeResultsViaAllOrigins(query) {
+  const searchQuery = buildYouTubeSearchQuery(query);
+  if (!searchQuery) return [];
+
+  const youtubeUrl = buildYouTubeSearchUrl(searchQuery);
+  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(youtubeUrl)}`;
+  const res = await fetch(proxyUrl, { mode: "cors" });
+  if (!res.ok) {
+    throw Object.assign(new Error(`AllOrigins search error ${res.status}`), { status: res.status });
+  }
+
+  const payload = await res.json();
+  const html = typeof payload?.contents === "string" ? payload.contents : "";
+  const items = parseYouTubeHtmlResults(html);
+  if (!items.length) return [];
+
+  if (state.mode === "music") {
+    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+  }
+
+  return items.slice(0, 25);
+}
+
+async function fetchYouTubeResultsViaDuckDuckGo(query) {
+  const searchQuery = buildDuckDuckGoQuery(query);
+  if (!searchQuery) return [];
+
+  const url = `https://r.jina.ai/http://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+  const res = await fetch(url, { mode: "cors" });
+  if (!res.ok) {
+    throw Object.assign(new Error(`DuckDuckGo relay error ${res.status}`), { status: res.status });
+  }
+
+  const text = await res.text();
+  const items = parseDuckDuckGoResults(text);
+  if (!items.length) return [];
+
+  if (state.mode === "music") {
+    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+  }
+
+  return items.slice(0, 25);
 }
 
 async function fetchYouTubeResultsViaApiKey(query, apiKey) {
