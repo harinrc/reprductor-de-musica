@@ -142,6 +142,7 @@ const refs = {
   miniPlayPause: document.getElementById("miniPlayPause"),
   miniNext: document.getElementById("miniNext"),
   closePlayerBtn: document.getElementById("closePlayerBtn"),
+  playerHead: document.getElementById("playerHead"),
   nowTitle: document.getElementById("nowTitle"),
   nowSubtitle: document.getElementById("nowSubtitle"),
   queueModeTabs: document.getElementById("queueModeTabs"),
@@ -673,10 +674,99 @@ function setResultsVisible(visible) {
 function setPlayerOpen(open) {
   if (!refs.nowPlayingSection) return;
   refs.nowPlayingSection.hidden = !open;
+  if (open) {
+    requestAnimationFrame(() => applyPlayerAdaptiveLayout());
+  }
 }
 
 function isPlayerOpen() {
   return Boolean(refs.nowPlayingSection && !refs.nowPlayingSection.hidden);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyPlayerAdaptiveLayout() {
+  const panel = refs.nowPlayingSection;
+  if (!panel) return;
+  const w = panel.clientWidth;
+  const h = panel.clientHeight;
+  panel.classList.toggle("is-compact", w < 920);
+  panel.classList.toggle("is-tight", h < 560);
+}
+
+function centerPlayerWindow() {
+  const panel = refs.nowPlayingSection;
+  if (!panel) return;
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const left = Math.round((window.innerWidth - rect.width) / 2);
+  const top = Math.round((window.innerHeight - rect.height) / 2);
+  panel.style.left = `${Math.max(8, left)}px`;
+  panel.style.top = `${Math.max(8, top)}px`;
+  panel.style.bottom = "auto";
+  panel.style.transform = "none";
+}
+
+function enablePlayerWindowInteraction() {
+  const panel = refs.nowPlayingSection;
+  const head = refs.playerHead;
+  if (!panel || !head || !window.PointerEvent) return;
+
+  let dragging = false;
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+
+  const onPointerMove = (event) => {
+    if (!dragging || event.pointerId !== pointerId) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    const rect = panel.getBoundingClientRect();
+    const nextLeft = clamp(startLeft + dx, 0, Math.max(0, window.innerWidth - rect.width));
+    const nextTop = clamp(startTop + dy, 0, Math.max(0, window.innerHeight - rect.height));
+    panel.style.left = `${Math.round(nextLeft)}px`;
+    panel.style.top = `${Math.round(nextTop)}px`;
+    panel.style.bottom = "auto";
+    panel.style.transform = "none";
+  };
+
+  const stopDrag = (event) => {
+    if (!dragging) return;
+    if (event && event.pointerId !== pointerId) return;
+    dragging = false;
+    pointerId = null;
+    head.classList.remove("dragging");
+    head.releasePointerCapture?.(event.pointerId);
+  };
+
+  head.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button,input,select,label,a")) return;
+    const rect = panel.getBoundingClientRect();
+    dragging = true;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    startLeft = rect.left;
+    startTop = rect.top;
+    head.classList.add("dragging");
+    head.setPointerCapture?.(event.pointerId);
+  });
+
+  head.addEventListener("pointermove", onPointerMove);
+  head.addEventListener("pointerup", stopDrag);
+  head.addEventListener("pointercancel", stopDrag);
+
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => applyPlayerAdaptiveLayout());
+    ro.observe(panel);
+  }
+
+  window.addEventListener("resize", applyPlayerAdaptiveLayout);
 }
 
 function renderMoodChips() {
@@ -1986,6 +2076,7 @@ function bootstrap() {
 
   bindEvents();
   initAudioVisualizer();
+  enablePlayerWindowInteraction();
   renderMoodChips();
   updatePrimaryPlayButton();
   updateShuffleUi();
@@ -1995,6 +2086,7 @@ function bootstrap() {
   setMode("music");
   setSource("online");
   setPlayerOpen(false);
+  centerPlayerWindow();
   setResultsVisible(false);
   if (refs.discoverSection) refs.discoverSection.hidden = false;
   loadDiscovery();
@@ -2002,7 +2094,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=18", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=19", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

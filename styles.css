@@ -402,12 +402,18 @@ input[type="password"] {
 
 .now-playing {
   position: fixed;
-  left: 50%;
-  bottom: 86px;
-  transform: translateX(-50%);
+  left: 32px;
+  top: 86px;
+  bottom: auto;
+  transform: none;
   width: min(980px, calc(100vw - 54px));
-  max-height: calc(100vh - 210px);
-  overflow: auto;
+  min-width: 760px;
+  min-height: 420px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 96px);
+  height: min(70vh, 690px);
+  resize: both;
+  overflow: hidden;
   z-index: 22;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(290px, 0.9fr);
@@ -438,6 +444,12 @@ input[type="password"] {
   margin: -14px -14px 6px;
   padding: 9px 14px;
   background: linear-gradient(180deg, rgba(11, 14, 19, 0.98), rgba(11, 14, 19, 0.72));
+  cursor: grab;
+  user-select: none;
+}
+
+.player-head.dragging {
+  cursor: grabbing;
 }
 
 #closePlayerBtn {
@@ -451,6 +463,7 @@ input[type="password"] {
   align-self: stretch;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .queue-head {
@@ -471,7 +484,9 @@ input[type="password"] {
 }
 
 .in-player-queue .track-list {
-  max-height: calc(100vh - 470px);
+  flex: 1;
+  min-height: 180px;
+  max-height: none;
 }
 
 .media-zone {
@@ -479,6 +494,7 @@ input[type="password"] {
   display: grid;
   grid-template-columns: 1fr;
   place-items: center;
+  min-width: 0;
 }
 
 .meta-zone {
@@ -695,6 +711,26 @@ input[type="password"] {
   gap: 12px;
 }
 
+.now-playing.is-compact {
+  grid-template-columns: 1fr;
+  grid-template-areas:
+    "head"
+    "media"
+    "meta"
+    "controls"
+    "seek"
+    "advanced"
+    "queue";
+}
+
+.now-playing.is-compact .in-player-queue .track-list {
+  min-height: 220px;
+}
+
+.now-playing.is-tight .in-player-queue .track-list {
+  min-height: 130px;
+}
+
 .advanced-row .chip {
   min-height: 44px;
   border-radius: 14px;
@@ -807,8 +843,15 @@ label {
 
   .now-playing {
     width: calc(100vw - 14px);
+    left: 7px;
+    right: 7px;
+    top: auto;
     bottom: 78px;
     max-height: calc(100vh - 90px);
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    resize: none;
     border-radius: 16px;
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -826,6 +869,7 @@ label {
     top: 0;
     margin-bottom: 6px;
     padding-top: 10px;
+    cursor: default;
   }
 
   #closePlayerBtn {
