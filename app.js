@@ -1083,8 +1083,12 @@ async function searchOnline() {
 
 async function fetchYouTubeResults(query) {
   if (state.youtubeApiKey) {
-    const byApiKey = await fetchYouTubeResultsViaApiKey(query, state.youtubeApiKey);
-    if (byApiKey.length) return byApiKey;
+    try {
+      const byApiKey = await fetchYouTubeResultsViaApiKey(query, state.youtubeApiKey);
+      if (byApiKey.length) return byApiKey;
+    } catch (_) {
+      // If YouTube Data API quota is exhausted, continue with non-key fallbacks.
+    }
   }
 
   try {
