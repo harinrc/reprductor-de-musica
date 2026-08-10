@@ -614,16 +614,61 @@ function similarityScore(a, b) {
   return overlap;
 }
 
+function artistHint(item) {
+  const subtitle = normalizeText(item?.subtitle || "");
+  if (!subtitle) return "";
+  return subtitle.split(" - ")[0].trim().toLowerCase();
+}
+
+function onlineSimilarityScore(seed, candidate) {
+  let score = similarityScore(seed, candidate);
+  const seedArtist = artistHint(seed);
+  const candidateArtist = artistHint(candidate);
+
+  if (seedArtist && candidateArtist) {
+    if (seedArtist === candidateArtist) {
+      score += 3;
+    } else if (seedArtist.includes(candidateArtist) || candidateArtist.includes(seedArtist)) {
+      score += 1;
+    }
+  }
+
+  if (state.mode === "video" && /official|live|mv/i.test(candidate.title || "")) {
+    score += 1;
+  }
+
+  return score;
+}
+
 function buildSmartQueue(seed, candidates) {
   const filtered = candidates.filter((x) => x.id !== seed.id);
   filtered.sort((a, b) => similarityScore(seed, b) - similarityScore(seed, a));
   return [seed, ...filtered.slice(0, 24)];
 }
 
+function buildOnlineQueue(seed, candidates) {
+  const scored = candidates
+    .filter((x) => x.id !== seed.id)
+    .map((x) => ({ item: x, score: onlineSimilarityScore(seed, x) }))
+    .sort((a, b) => b.score - a.score);
+
+  const strong = scored.filter((x) => x.score >= 2).map((x) => x.item);
+  if (strong.length) return [seed, ...strong.slice(0, 18)];
+
+  const medium = scored.filter((x) => x.score >= 1).map((x) => x.item);
+  if (medium.length) return [seed, ...medium.slice(0, 12)];
+
+  return [seed];
+}
+
 async function startSmartPlayback(item, sourceItems = null) {
   const base = sourceItems || nowLibrary();
-  const queue = buildSmartQueue(item, base);
-  state.queue[state.mode][state.source] = queue;
+  const onlineYoutube = state.source === "online" && item.kind === "youtube";
+  const queue = onlineYoutube
+    ? buildOnlineQueue(item, base)
+    : buildSmartQueue(item, base);
+
+  state.queue[state.mode][state.source] = queue.length ? queue : [item];
   setNowIndex(0);
   renderQueue();
   playItem(item, 0);
@@ -632,9 +677,12 @@ async function startSmartPlayback(item, sourceItems = null) {
     const rec = await fetchRecommendations(item.youtubeId);
     if (rec.length) {
       const existing = new Set(nowQueue().map((x) => x.id));
-      rec.forEach((r) => {
-        if (!existing.has(r.id)) nowQueue().push(r);
-      });
+      const fresh = rec.filter((r) => !existing.has(r.id));
+      if (onlineYoutube) {
+        nowQueue().splice(1, 0, ...fresh.slice(0, 20));
+      } else {
+        fresh.forEach((r) => nowQueue().push(r));
+      }
       renderQueue();
     }
   }
@@ -1704,7 +1752,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=12", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=13", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

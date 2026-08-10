@@ -401,12 +401,21 @@ input[type="password"] {
   left: 50%;
   bottom: 86px;
   transform: translateX(-50%);
-  width: min(980px, calc(100vw - 26px));
-  max-height: calc(100vh - 112px);
+  width: min(1320px, calc(100vw - 30px));
+  max-height: calc(100vh - 100px);
   overflow: auto;
   z-index: 22;
   display: grid;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.06fr) minmax(330px, 0.94fr);
+  grid-template-areas:
+    "head head"
+    "media queue"
+    "meta queue"
+    "controls queue"
+    "seek queue"
+    "advanced queue";
+  align-items: start;
+  gap: 14px 16px;
   padding: 16px;
 }
 
@@ -415,19 +424,46 @@ input[type="password"] {
 }
 
 .player-head {
+  grid-area: head;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
 .in-player-queue {
-  margin-top: 2px;
+  grid-area: queue;
+  margin-top: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+
+.in-player-queue .track-list {
+  max-height: calc(100vh - 320px);
 }
 
 .media-zone {
+  grid-area: media;
   display: grid;
   grid-template-columns: 1fr;
   place-items: center;
+}
+
+.meta-zone {
+  grid-area: meta;
+}
+
+.controls {
+  grid-area: controls;
+  justify-content: center;
+}
+
+.seek-row {
+  grid-area: seek;
+}
+
+.advanced-row {
+  grid-area: advanced;
 }
 
 .video-wrap {
@@ -463,8 +499,8 @@ input[type="password"] {
 }
 
 .music-art {
-  width: min(100%, 700px);
-  height: 180px;
+  width: min(100%, 760px);
+  height: 240px;
   border-radius: 18px;
   background:
     radial-gradient(circle at 20% 30%, rgba(var(--aura-rgb), 0.4), transparent 50%),
@@ -650,6 +686,25 @@ label {
     bottom: 78px;
     max-height: calc(100vh - 90px);
     border-radius: 16px;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "head"
+      "media"
+      "meta"
+      "controls"
+      "seek"
+      "advanced"
+      "queue";
+    gap: 12px;
+  }
+
+  .music-art {
+    width: 100%;
+    height: clamp(210px, 42vh, 380px);
+  }
+
+  .in-player-queue .track-list {
+    max-height: 42vh;
   }
 
   .controls {
