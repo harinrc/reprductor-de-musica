@@ -107,9 +107,10 @@ body {
 .app-shell {
   position: relative;
   z-index: 1;
-  max-width: 1160px;
+  width: 100%;
+  max-width: 1360px;
   margin: 18px auto;
-  padding: 18px;
+  padding: 20px 26px;
   display: grid;
   gap: 14px;
 }
@@ -164,8 +165,8 @@ body {
   padding: 0;
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+  gap: 14px;
 }
 
 .discover-card {
@@ -638,6 +639,10 @@ label {
 
   .content-grid {
     grid-template-columns: 1fr;
+  }
+
+  .app-shell {
+    padding: 16px 14px;
   }
 
   .now-playing {
