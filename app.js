@@ -98,6 +98,7 @@ const refs = {
   discoverSection: document.getElementById("discoverSection"),
   discoverList: document.getElementById("discoverList"),
   moodChips: document.getElementById("moodChips"),
+  resultsSection: document.getElementById("resultsSection"),
   localPicker: document.getElementById("localPicker"),
   nowPlayingSection: document.getElementById("nowPlayingSection"),
   libraryList: document.getElementById("libraryList"),
@@ -326,6 +327,11 @@ function renderQueue() {
 function renderAll() {
   renderLibrary();
   renderQueue();
+}
+
+function setResultsVisible(visible) {
+  if (!refs.resultsSection) return;
+  refs.resultsSection.hidden = !visible;
 }
 
 function setPlayerOpen(open) {
@@ -871,8 +877,10 @@ async function searchOnline() {
       throw new Error("Empty search results");
     }
     state.library[state.mode].online = results;
+    setResultsVisible(true);
     renderLibrary(results);
   } catch (err) {
+    setResultsVisible(true);
     renderLibrary([]);
     const li = document.createElement("li");
     li.className = "track-item";
@@ -1101,12 +1109,14 @@ function loadLocalFiles(fileList) {
     }));
 
   state.library[state.mode].local = mapped;
+  setResultsVisible(true);
   renderLibrary();
 }
 
 function filterLocal() {
   const q = refs.localQuery.value.trim().toLowerCase();
   if (!q) {
+    setResultsVisible(nowLibrary().length > 0);
     renderLibrary();
     return;
   }
@@ -1114,6 +1124,7 @@ function filterLocal() {
   const filtered = nowLibrary().filter((x) =>
     x.title.toLowerCase().includes(q) || (x.subtitle || "").toLowerCase().includes(q)
   );
+  setResultsVisible(true);
   renderLibrary(filtered);
 }
 
@@ -1428,6 +1439,7 @@ function bootstrap() {
   setMode("music");
   setSource("online");
   setPlayerOpen(false);
+  setResultsVisible(false);
   if (refs.discoverSection) refs.discoverSection.hidden = false;
   loadDiscovery();
   setMediaActionHandlers();
