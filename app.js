@@ -1951,7 +1951,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=15", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=16", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
