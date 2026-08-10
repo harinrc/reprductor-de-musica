@@ -219,6 +219,18 @@ input[type="password"] {
   position: relative;
 }
 
+.video-wrap.audio-host {
+  width: 1px;
+  height: 1px;
+  aspect-ratio: auto;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  border-radius: 0;
+}
+
 #youtubePlayer,
 #htmlPlayer {
   width: 100%;

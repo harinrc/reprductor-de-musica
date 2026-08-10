@@ -20,7 +20,8 @@ const state = {
   ytReady: false,
   ytPlayer: null,
   isPlaying: false,
-  youtubeApiKey: ""
+  youtubeApiKey: "",
+  pendingYouTubeItem: null
 };
 
 const invidiousInstances = [
@@ -187,6 +188,7 @@ function updateMediaSurface() {
   const isVideoMode = state.mode === "video";
   const active = state.current;
   const online = state.source === "online";
+  refs.videoFrameWrap.classList.remove("audio-host");
   refs.videoFrameWrap.hidden = !isVideoMode;
   refs.musicArt.hidden = isVideoMode;
 
@@ -198,6 +200,11 @@ function updateMediaSurface() {
   if (active.kind === "local") {
     refs.htmlPlayer.style.display = "block";
   } else if (online && isVideoMode) {
+    refs.htmlPlayer.style.display = "none";
+  } else if (active.kind === "youtube" && state.mode === "music") {
+    // Keep YouTube iframe mounted for reliable audio playback in music mode.
+    refs.videoFrameWrap.hidden = false;
+    refs.videoFrameWrap.classList.add("audio-host");
     refs.htmlPlayer.style.display = "none";
   }
 }
@@ -323,10 +330,16 @@ function playLocal(item) {
 }
 
 function playYouTube(item) {
-  if (!state.ytPlayer || !state.ytReady) return;
+  if (!state.ytPlayer || !state.ytReady) {
+    state.pendingYouTubeItem = item;
+    return;
+  }
+
+  state.pendingYouTubeItem = null;
   refs.htmlPlayer.pause();
 
   state.ytPlayer.loadVideoById(item.youtubeId);
+  state.ytPlayer.playVideo();
   state.ytPlayer.setPlaybackRate(Number(refs.speedSelect.value));
   state.ytPlayer.setVolume(Math.round(Number(refs.volumeBar.value) * 100));
 }
@@ -921,6 +934,9 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
     events: {
       onReady: () => {
         state.ytReady = true;
+        if (state.pendingYouTubeItem) {
+          playYouTube(state.pendingYouTubeItem);
+        }
       },
       onStateChange: (event) => {
         if (event.data === YT.PlayerState.ENDED) onMediaEnded();
