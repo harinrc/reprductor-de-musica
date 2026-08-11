@@ -32,6 +32,7 @@ const state = {
     lastTime: 0
   },
   selectedMood: "Energia",
+  discoverSeed: Math.floor(Math.random() * 100000),
   discoverRequestId: 0,
   discoverCache: {
     music: { online: [], local: [] },
@@ -204,6 +205,7 @@ const refs = {
   queueModeTabs: document.getElementById("queueModeTabs"),
   queueModeRelated: document.getElementById("queueModeRelated"),
   queueModeResults: document.getElementById("queueModeResults"),
+  closeResultsBtn: document.getElementById("closeResultsBtn"),
   shuffleControlBtn: document.getElementById("shuffleControlBtn"),
   prevBtn: document.getElementById("prevBtn"),
   backBtn: document.getElementById("backBtn"),
@@ -949,7 +951,7 @@ async function loadDiscovery() {
   const cached = getCachedValue(runtimeCache.discovery, cacheKey, DISCOVERY_CACHE_TTL);
 
   if (cached?.length) {
-    renderDiscovery(rotateItems(cached, requestId));
+    renderDiscovery(rotateItems(cached, state.discoverSeed + requestId));
   }
 
   if (state.source === "local") {
@@ -959,7 +961,7 @@ async function loadDiscovery() {
     state.discoverCache[state.mode].local = combined;
     setCachedValue(runtimeCache.discovery, cacheKey, combined);
     if (requestId !== state.discoverRequestId) return;
-    renderDiscovery(rotateItems(combined, requestId));
+    renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
     return;
   }
 
@@ -972,7 +974,7 @@ async function loadDiscovery() {
       ? await fetchRecommendationsSafe(state.current.youtubeId).catch(() => [])
       : [];
     const combined = uniqueItems([...results, ...seeded, ...fallback]).slice(0, 30);
-    const rotated = rotateItems(combined, requestId);
+    const rotated = rotateItems(combined, state.discoverSeed + requestId);
     state.discoverCache[state.mode].online = rotated;
     setCachedValue(runtimeCache.discovery, cacheKey, rotated);
     renderDiscovery(rotated);
@@ -983,11 +985,11 @@ async function loadDiscovery() {
     const combined = uniqueItems([...(state.discoverCache[state.mode].online || []), ...fallback]).slice(0, 24);
     if (String(error?.status || error?.code || "") === "429" || /quota/i.test(String(error?.message || ""))) {
       setCachedValue(runtimeCache.discovery, cacheKey, combined);
-      renderDiscovery(rotateItems(combined, requestId));
+      renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
       return;
     }
     setCachedValue(runtimeCache.discovery, cacheKey, combined);
-    renderDiscovery(rotateItems(combined, requestId));
+    renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
   }
 }
 
@@ -1249,6 +1251,8 @@ function enqueue(item) {
 function playItem(item, queuePosition = null) {
   if (!item) return;
 
+  setPlayerOpen(true);
+
   state.current = item;
   state.isPlaying = true;
 
@@ -1381,8 +1385,16 @@ function playLocal(item) {
 }
 
 function playYouTube(item) {
+  if (!item?.youtubeId) {
+    updateOnlineHint("Este elemento no tiene un video valido para reproducir.");
+    state.isPlaying = false;
+    updatePrimaryPlayButton();
+    return;
+  }
+
   if (!state.ytPlayer || !state.ytReady) {
     state.pendingYouTubeItem = item;
+    updateOnlineHint("Cargando reproductor de YouTube...");
     return;
   }
 
@@ -1393,6 +1405,7 @@ function playYouTube(item) {
   state.ytPlayer.playVideo();
   state.ytPlayer.setPlaybackRate(Number(refs.speedSelect.value));
   state.ytPlayer.setVolume(Math.round(Number(refs.volumeBar.value) * 100));
+  updateOnlineHint("Reproduciendo en YouTube.");
 }
 
 function togglePlay() {
@@ -2044,6 +2057,15 @@ function bindEvents() {
   if (refs.queueModeResults) {
     refs.queueModeResults.addEventListener("click", () => setActiveQueueView("results"));
   }
+  if (refs.closeResultsBtn) {
+    refs.closeResultsBtn.addEventListener("click", () => {
+      setResultsVisible(false);
+      if (refs.discoverSection) {
+        refs.discoverSection.hidden = false;
+        refs.discoverSection.scrollIntoView({ block: "start" });
+      }
+    });
+  }
 
   refs.prevBtn.addEventListener("click", previousTrack);
   refs.backBtn.addEventListener("click", () => seekBy(-10));
@@ -2260,7 +2282,7 @@ function bootstrap() {
     window.__duoDiscoveryRefreshTimer = window.setInterval(() => {
       if (!refs.discoverSection || refs.discoverSection.hidden) return;
       loadDiscovery();
-    }, 240000);
+    }, 180000);
   }
 
   if (!window.__duoQueueGrowthTimer) {
@@ -2271,7 +2293,7 @@ function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=24", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=25", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

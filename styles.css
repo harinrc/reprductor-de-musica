@@ -139,6 +139,19 @@ body {
   align-items: center;
 }
 
+.results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.results-head h2 {
+  margin: 0;
+}
+
 .discover-head h2 {
   margin: 0;
 }
