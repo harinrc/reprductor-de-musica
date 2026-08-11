@@ -29,6 +29,44 @@ function trackSignature(title, author) {
   return `${artist}|${core}`;
 }
 
+const genreLexicon = {
+  edm: ["edm", "electronic", "dance", "festival", "big room", "progressive"],
+  house: ["house", "deep house", "tech house"],
+  trance: ["trance", "psytrance", "uplifting"],
+  techno: ["techno", "minimal techno", "hard techno"],
+  hiphop: ["hip hop", "hiphop", "rap", "trap", "drill"],
+  reggaeton: ["reggaeton", "latin urbano", "dembow"],
+  pop: ["pop", "mainstream", "chart"],
+  rock: ["rock", "alternative", "indie rock", "metal", "punk"],
+  lofi: ["lofi", "lo-fi", "chillhop", "study beats"],
+  ambient: ["ambient", "relax", "meditation", "sleep"]
+};
+
+function detectGenres(text) {
+  const raw = normalizeText(text).toLowerCase();
+  const found = [];
+  Object.entries(genreLexicon).forEach(([genre, words]) => {
+    if (words.some((w) => raw.includes(w))) found.push(genre);
+  });
+  return found;
+}
+
+function inferGenre(seed, genreHint, mood) {
+  const fromHint = normalizeText(genreHint).toLowerCase();
+  if (fromHint && genreLexicon[fromHint]) return fromHint;
+  const byText = detectGenres(seed || "");
+  if (byText.length) return byText[0];
+  const moodMap = {
+    energia: "edm",
+    relax: "lofi",
+    concentracion: "lofi",
+    fiesta: "reggaeton",
+    triste: "pop",
+    romantica: "pop"
+  };
+  return moodMap[String(mood || "").toLowerCase()] || "pop";
+}
+
 function mapVideo(v) {
   return {
     id: `yt-${v.videoId}`,
@@ -94,6 +132,9 @@ app.get("/api/search", async (req, res) => {
 
 app.get("/api/recommend", async (req, res) => {
   const videoId = String(req.query.videoId || "").trim();
+  const seedHint = String(req.query.seed || "").trim();
+  const genreHint = String(req.query.genre || "").trim();
+  const moodHint = String(req.query.mood || "").trim();
   if (!videoId) {
     return res.status(400).json({ error: "Missing videoId" });
   }
@@ -102,6 +143,7 @@ app.get("/api/recommend", async (req, res) => {
     const details = await yts({ videoId });
     const seedTitle = normalizeText(details?.title || "");
     const seedAuthor = normalizeText(details?.author?.name || "");
+    const genre = inferGenre(`${seedHint} ${seedTitle} ${seedAuthor}`, genreHint, moodHint);
     const seedSignature = trackSignature(seedTitle, seedAuthor);
     const excludeIds = new Set([`yt-${videoId}`]);
     const excludeSignatures = new Set(seedSignature ? [seedSignature] : []);
@@ -113,9 +155,11 @@ app.get("/api/recommend", async (req, res) => {
     }
 
     const searchQueries = [];
-    if (seedAuthor && seedTitle) searchQueries.push(`${seedAuthor} ${cleanTitleForQuery(seedTitle)}`);
-    if (seedTitle) searchQueries.push(`${cleanTitleForQuery(seedTitle)} similar songs`);
-    if (seedAuthor) searchQueries.push(`${seedAuthor} top tracks`);
+    if (seedAuthor && seedTitle) searchQueries.push(`${seedAuthor} ${genre} songs`);
+    if (seedHint) searchQueries.push(`${seedHint} ${genre} playlist`);
+    searchQueries.push(`${genre} music mix`);
+    searchQueries.push(`${genre} songs playlist`);
+    if (seedAuthor) searchQueries.push(`${seedAuthor} ${genre}`);
 
     for (const q of searchQueries) {
       if (!q.trim()) continue;

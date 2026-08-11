@@ -54,6 +54,36 @@ const moodQueries = {
   Romantica: "romantic songs playlist"
 };
 
+const genreLexicon = {
+  edm: ["edm", "electronic", "dance", "festival", "big room", "progressive", "electro"],
+  house: ["house", "deep house", "tech house", "slap house"],
+  trance: ["trance", "uplifting", "psytrance"],
+  techno: ["techno", "minimal techno", "hard techno"],
+  hiphop: ["hip hop", "hiphop", "rap", "trap", "drill", "freestyle"],
+  reggaeton: ["reggaeton", "latin urbano", "dembow"],
+  pop: ["pop", "chart", "mainstream"],
+  rock: ["rock", "alternative", "indie rock", "metal", "punk"],
+  lofi: ["lofi", "lo-fi", "chillhop", "study beats"],
+  classical: ["classical", "orchestra", "piano", "violin", "symphony"],
+  jazz: ["jazz", "swing", "blues", "soul"],
+  ambient: ["ambient", "meditation", "sleep", "relaxing"]
+};
+
+const genreLabel = {
+  edm: "edm",
+  house: "house",
+  trance: "trance",
+  techno: "techno",
+  hiphop: "hip hop",
+  reggaeton: "reggaeton",
+  pop: "pop",
+  rock: "rock",
+  lofi: "lofi",
+  classical: "classical",
+  jazz: "jazz",
+  ambient: "ambient"
+};
+
 const fallbackCatalog = [
   { title: "Eminem - Lose Yourself", subtitle: "Hip Hop", youtubeId: "xFYQQPAOz7Y", thumbnail: "https://i.ytimg.com/vi/xFYQQPAOz7Y/hqdefault.jpg", moods: ["Energia", "Concentracion"] },
   { title: "Eminem - Mockingbird", subtitle: "Hip Hop", youtubeId: "S9bCLPwzSC0", thumbnail: "https://i.ytimg.com/vi/S9bCLPwzSC0/hqdefault.jpg", moods: ["Triste", "Relax"] },
@@ -371,13 +401,18 @@ function buildRadioRelatedQueries(qState) {
   const cycle = Number(qState.growthCycle || 0);
   const modifiers = ["official", "audio", "lyrics", "live", "mix", "remix", "playlist"];
   const mod = modifiers[cycle % modifiers.length];
+  const seedGenres = Array.from(radioGenreProfile(state.current || {}));
+  const primaryGenre = seedGenres[0] || "pop";
+  const genreQuery = genreLabel[primaryGenre] || primaryGenre;
 
-  if (seed) queryBase.push(seed);
+  if (seed) queryBase.push(`${seed} ${genreQuery}`);
   if (currentTitle) queryBase.push(currentTitle);
-  if (artist && currentTitle) queryBase.push(`${artist} ${currentTitle}`);
-  if (seed && artist) queryBase.push(`${seed} ${artist}`);
-  if (seed) queryBase.push(`${seed} ${mod}`);
-  if (currentTitle) queryBase.push(`${currentTitle} ${mod}`);
+  if (artist && currentTitle) queryBase.push(`${artist} ${genreQuery}`);
+  if (seed && artist) queryBase.push(`${seed} ${artist} ${genreQuery}`);
+  if (seed) queryBase.push(`${seed} ${genreQuery} ${mod}`);
+  if (currentTitle) queryBase.push(`${currentTitle} ${genreQuery} ${mod}`);
+  queryBase.push(`${genreQuery} music mix`);
+  queryBase.push(`${genreQuery} songs playlist`);
 
   return uniqueItems(queryBase.map((q) => ({ id: q.toLowerCase(), q }))).map((x) => x.q).slice(0, 6);
 }
@@ -1251,6 +1286,55 @@ function keywordsFromTitle(text) {
     .filter((x) => x.length > 2 && !stop.has(x));
 }
 
+function detectGenres(text) {
+  const raw = normalizeText(text).toLowerCase();
+  const found = new Set();
+  if (!raw) return found;
+
+  Object.entries(genreLexicon).forEach(([genre, words]) => {
+    if (words.some((w) => raw.includes(w))) {
+      found.add(genre);
+    }
+  });
+
+  return found;
+}
+
+function radioGenreProfile(seed) {
+  const qState = isOnlineQueueMode() ? onlineQueueState() : null;
+  const signals = [
+    seed?.title || "",
+    seed?.subtitle || "",
+    qState?.searchSeed || "",
+    moodQueries[state.selectedMood] || ""
+  ].join(" ");
+
+  const genres = detectGenres(signals);
+  if (!genres.size && state.selectedMood === "Energia") genres.add("edm");
+  if (!genres.size && state.selectedMood === "Relax") genres.add("lofi");
+  if (!genres.size && state.selectedMood === "Concentracion") genres.add("lofi");
+  if (!genres.size && state.selectedMood === "Fiesta") genres.add("reggaeton");
+  if (!genres.size && state.selectedMood === "Triste") genres.add("pop");
+  if (!genres.size && state.selectedMood === "Romantica") genres.add("pop");
+
+  return genres;
+}
+
+function genreAffinityScore(seed, candidate) {
+  const seedGenres = radioGenreProfile(seed);
+  if (!seedGenres.size) return 0;
+  const candidateGenres = detectGenres(`${candidate?.title || ""} ${candidate?.subtitle || ""}`);
+  if (!candidateGenres.size) return -0.4;
+
+  let overlap = 0;
+  seedGenres.forEach((g) => {
+    if (candidateGenres.has(g)) overlap += 1;
+  });
+
+  if (!overlap) return -0.8;
+  return overlap * 1.25;
+}
+
 function similarityScore(a, b) {
   const sa = new Set(keywordsFromTitle(a.title));
   const sb = new Set(keywordsFromTitle(b.title));
@@ -1271,6 +1355,7 @@ function onlineSimilarityScore(seed, candidate) {
   let score = similarityScore(seed, candidate);
   const seedArtist = artistHint(seed);
   const candidateArtist = artistHint(candidate);
+  score += genreAffinityScore(seed, candidate);
 
   if (seedArtist && candidateArtist) {
     if (seedArtist === candidateArtist) {
@@ -2074,7 +2159,10 @@ async function fetchRecommendations(videoId) {
   if (hasLocalApi()) {
     try {
       const base = String(appConfig.publicApiBase || "").trim();
-      const route = `/api/recommend?videoId=${encodeURIComponent(videoId)}`;
+      const qState = isOnlineQueueMode() ? onlineQueueState() : null;
+      const seedHint = normalizeText(qState?.searchSeed || state.current?.title || "");
+      const genreHint = Array.from(radioGenreProfile(state.current || {}))[0] || "";
+      const route = `/api/recommend?videoId=${encodeURIComponent(videoId)}&seed=${encodeURIComponent(seedHint)}&genre=${encodeURIComponent(genreHint)}&mood=${encodeURIComponent(state.selectedMood || "")}`;
       const proxyUrl = base ? `${base}${route}` : route;
       const proxyRes = await fetch(proxyUrl);
       if (proxyRes.ok) {
@@ -2589,7 +2677,7 @@ function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=26", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=27", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
