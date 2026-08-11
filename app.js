@@ -65,7 +65,18 @@ const fallbackCatalog = [
   { title: "Coldplay - Yellow", subtitle: "Rock", youtubeId: "yKNxeF4KMsY", thumbnail: "https://i.ytimg.com/vi/yKNxeF4KMsY/hqdefault.jpg", moods: ["Relax", "Romantica"] },
   { title: "Kina - Get You The Moon", subtitle: "Lo-fi / Chill", youtubeId: "AF1M6E2F8_8", thumbnail: "https://i.ytimg.com/vi/AF1M6E2F8_8/hqdefault.jpg", moods: ["Relax", "Concentracion"] },
   { title: "AURORA - Runaway", subtitle: "Alternative", youtubeId: "d_HlPboLRL8", thumbnail: "https://i.ytimg.com/vi/d_HlPboLRL8/hqdefault.jpg", moods: ["Triste", "Relax"] },
-  { title: "Ruelle - I Get To Love You", subtitle: "Romantic", youtubeId: "15a49Hik4FQ", thumbnail: "https://i.ytimg.com/vi/15a49Hik4FQ/hqdefault.jpg", moods: ["Romantica", "Triste"] }
+  { title: "Ruelle - I Get To Love You", subtitle: "Romantic", youtubeId: "15a49Hik4FQ", thumbnail: "https://i.ytimg.com/vi/15a49Hik4FQ/hqdefault.jpg", moods: ["Romantica", "Triste"] },
+  { title: "Linkin Park - Numb", subtitle: "Rock / Alternative", youtubeId: "kXYiU_JCYtU", thumbnail: "https://i.ytimg.com/vi/kXYiU_JCYtU/hqdefault.jpg", moods: ["Triste", "Concentracion"] },
+  { title: "Imagine Dragons - Believer", subtitle: "Alternative Rock", youtubeId: "7wtfhZwyrcc", thumbnail: "https://i.ytimg.com/vi/7wtfhZwyrcc/hqdefault.jpg", moods: ["Energia", "Fiesta"] },
+  { title: "Avicii - Wake Me Up", subtitle: "EDM / Pop", youtubeId: "IcrbM1l_BoI", thumbnail: "https://i.ytimg.com/vi/IcrbM1l_BoI/hqdefault.jpg", moods: ["Energia", "Relax"] },
+  { title: "Queen - Don't Stop Me Now", subtitle: "Classic Rock", youtubeId: "HgzGwKwLmgM", thumbnail: "https://i.ytimg.com/vi/HgzGwKwLmgM/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Ed Sheeran - Shape of You", subtitle: "Pop", youtubeId: "JGwWNGJdvx8", thumbnail: "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg", moods: ["Fiesta", "Romantica"] },
+  { title: "Sia - Cheap Thrills", subtitle: "Pop", youtubeId: "nYh-n7EOtMA", thumbnail: "https://i.ytimg.com/vi/nYh-n7EOtMA/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Alan Walker - Faded", subtitle: "EDM", youtubeId: "60ItHLz5WEA", thumbnail: "https://i.ytimg.com/vi/60ItHLz5WEA/hqdefault.jpg", moods: ["Relax", "Triste"] },
+  { title: "BTS - Dynamite", subtitle: "Pop", youtubeId: "gdZLi9oWNZg", thumbnail: "https://i.ytimg.com/vi/gdZLi9oWNZg/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Shakira - Waka Waka", subtitle: "Pop Latino", youtubeId: "pRpeEdMmmQ0", thumbnail: "https://i.ytimg.com/vi/pRpeEdMmmQ0/hqdefault.jpg", moods: ["Fiesta", "Energia"] },
+  { title: "Adele - Rolling in the Deep", subtitle: "Pop Soul", youtubeId: "rYEDA3JcQqw", thumbnail: "https://i.ytimg.com/vi/rYEDA3JcQqw/hqdefault.jpg", moods: ["Triste", "Relax"] },
+  { title: "The Kid LAROI, Justin Bieber - STAY", subtitle: "Pop", youtubeId: "kTJczUoc26U", thumbnail: "https://i.ytimg.com/vi/kTJczUoc26U/hqdefault.jpg", moods: ["Romantica", "Fiesta"] }
 ];
 
 const invidiousInstances = [
@@ -664,7 +675,7 @@ function searchFallbackCatalog(query) {
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .map((x) => x.item);
-  return scored.length ? scored : fallbackCatalog.slice(0, 8).map(normalizeCatalogItem);
+  return scored.length ? scored : fallbackCatalog.slice(0, 14).map(normalizeCatalogItem);
 }
 
 function setResultsVisible(visible) {
@@ -884,7 +895,7 @@ async function loadDiscovery() {
 
   if (state.source === "local") {
     const local = state.library[state.mode].local;
-    const localSlice = local.slice(0, 18);
+    const localSlice = local.slice(0, 24);
     state.discoverCache[state.mode].local = localSlice;
     if (requestId !== state.discoverRequestId) return;
     renderDiscovery(localSlice);
@@ -895,7 +906,7 @@ async function loadDiscovery() {
   try {
     const results = await fetchYouTubeResults(query);
     if (requestId !== state.discoverRequestId) return;
-    const sliced = results.slice(0, 18);
+    const sliced = results.slice(0, 30);
     if (sliced.length) {
       state.discoverCache[state.mode].online = sliced;
       renderDiscovery(sliced);
@@ -969,10 +980,10 @@ function buildOnlineQueue(seed, candidates) {
     .sort((a, b) => b.score - a.score);
 
   const strong = scored.filter((x) => x.score >= 2).map((x) => x.item);
-  if (strong.length) return [seed, ...strong.slice(0, 18)];
+  if (strong.length) return [seed, ...strong.slice(0, 24)];
 
   const medium = scored.filter((x) => x.score >= 1).map((x) => x.item);
-  if (medium.length) return [seed, ...medium.slice(0, 12)];
+  if (medium.length) return [seed, ...medium.slice(0, 24)];
 
   return [seed];
 }
@@ -1458,11 +1469,13 @@ async function searchOnline() {
     state.library[state.mode].online = results;
     setResultsVisible(true);
     renderLibrary(results);
+    refs.resultsSection?.scrollIntoView({ block: "start" });
   } catch (err) {
     const fallback = searchFallbackCatalog(query);
     state.library[state.mode].online = fallback;
     setResultsVisible(true);
     renderLibrary(fallback);
+    refs.resultsSection?.scrollIntoView({ block: "start" });
     updateOnlineHint(/quota|429/i.test(String(err?.message || ""))
       ? "Cuota de YouTube agotada; mostrando sugerencias locales hasta que se restablezca."
       : "Mostrando sugerencias locales de respaldo.");
@@ -1525,7 +1538,7 @@ async function fetchYouTubeResults(query) {
       const data = await res.json();
       const cleaned = data
         .filter((x) => x.type === "video" && x.videoId)
-        .slice(0, 25)
+        .slice(0, 30)
         .map((x) => ({
           id: `yt-${x.videoId}`,
           youtubeId: x.videoId,
@@ -1564,10 +1577,10 @@ async function fetchYouTubeResultsViaAllOrigins(query) {
   if (!items.length) return [];
 
   if (state.mode === "music") {
-    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 30);
   }
 
-  return items.slice(0, 25);
+  return items.slice(0, 30);
 }
 
 async function fetchYouTubeResultsViaDuckDuckGo(query) {
@@ -1585,15 +1598,15 @@ async function fetchYouTubeResultsViaDuckDuckGo(query) {
   if (!items.length) return [];
 
   if (state.mode === "music") {
-    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+    return items.filter((x) => !/shorts/i.test(x.title)).slice(0, 30);
   }
 
-  return items.slice(0, 25);
+  return items.slice(0, 30);
 }
 
 async function fetchYouTubeResultsViaApiKey(query, apiKey) {
   const searchUrl = "https://www.googleapis.com/youtube/v3/search"
-    + `?part=snippet&type=video&maxResults=25&q=${encodeURIComponent(query)}`
+    + `?part=snippet&type=video&maxResults=30&q=${encodeURIComponent(query)}`
     + `&key=${encodeURIComponent(apiKey)}`;
   const searchRes = await fetch(searchUrl);
   if (!searchRes.ok) {
@@ -1608,7 +1621,7 @@ async function fetchYouTubeResultsViaApiKey(query, apiKey) {
   const ids = items
     .map((x) => x?.id?.videoId)
     .filter(Boolean)
-    .slice(0, 25);
+    .slice(0, 30);
 
   const durationMap = await fetchDurationMapByVideoIds(ids, apiKey);
 
@@ -1630,7 +1643,7 @@ async function fetchYouTubeResultsViaApiKey(query, apiKey) {
     .filter(Boolean);
 
   if (state.mode === "music") {
-    return mapped.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+    return mapped.filter((x) => !/shorts/i.test(x.title)).slice(0, 30);
   }
 
   return mapped;

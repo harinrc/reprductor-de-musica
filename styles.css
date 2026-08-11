@@ -171,16 +171,15 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
   gap: 14px;
+  touch-action: pan-y;
 }
 
 .discover-card {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: linear-gradient(180deg, #121722, #0d1219);
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable both-edges;
-  -webkit-overflow-scrolling: touch;
+  overflow: hidden;
+  touch-action: pan-y;
   cursor: pointer;
 }
 
@@ -262,6 +261,14 @@ body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 14px;
+}
+
+#resultsSection {
+  order: 1;
+}
+
+#discoverSection {
+  order: 2;
 }
 
 .content-grid[hidden] {
