@@ -128,6 +128,12 @@ const DISCOVERY_CACHE_TTL = 4 * 60 * 1000;
 
 const appConfig = window.DUO_CONFIG || {};
 let deferredInstallPrompt = null;
+const LOCAL_DB_NAME = "duoplayer-local-v1";
+const LOCAL_DB_STORE = "tracks";
+let localDbPromise = null;
+const PLAYBACK_NOTIFICATION_TAG = "duo-playback-controls";
+let hasAskedNotificationPermission = false;
+let playbackNotificationKey = "";
 
 function hasLocalApi() {
   return location.protocol === "http:" || location.protocol === "https:";
@@ -1624,6 +1630,7 @@ function playItem(item, queuePosition = null) {
 
   state.current = item;
   state.isPlaying = true;
+  updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
 
   if (queuePosition == null) {
     const index = nowQueue().findIndex((x) => x.id === item.id);
@@ -1780,6 +1787,8 @@ function playYouTube(item) {
 function togglePlay() {
   if (!state.current) return;
 
+  updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
+
   if (state.current.kind === "local") {
     refs.htmlPlayer.play().catch(() => null);
   } else if (state.ytReady) {
@@ -1794,6 +1803,8 @@ function togglePlay() {
 
 function togglePause() {
   if (!state.current) return;
+
+  updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
 
   if (state.current.kind === "local") {
     refs.htmlPlayer.pause();
@@ -2265,11 +2276,20 @@ function readAudioTags(file) {
   });
 }
 
+function pictureToBlob(picture) {
+  try {
+    if (!picture?.data || !picture?.format) return null;
+    const bytes = new Uint8Array(picture.data);
+    return new Blob([bytes], { type: picture.format });
+  } catch (_) {
+    return null;
+  }
+}
+
 function pictureToObjectUrl(picture) {
   try {
-    if (!picture?.data || !picture?.format) return "";
-    const bytes = new Uint8Array(picture.data);
-    const blob = new Blob([bytes], { type: picture.format });
+    const blob = pictureToBlob(picture);
+    if (!blob) return "";
     return URL.createObjectURL(blob);
   } catch (_) {
     return "";
@@ -2318,6 +2338,7 @@ async function buildLocalItem(file) {
   let artist = "Local";
   let album = "";
   let thumbnail = "";
+  let thumbnailBlob = null;
 
   if (!isVideo) {
     const tags = await readAudioTags(file);
@@ -2325,7 +2346,8 @@ async function buildLocalItem(file) {
       title = normalizeText(tags.title || baseTitle) || baseTitle;
       artist = normalizeText(tags.artist || tags.albumartist || artist) || artist;
       album = normalizeText(tags.album || "");
-      thumbnail = pictureToObjectUrl(tags.picture);
+      thumbnailBlob = pictureToBlob(tags.picture);
+      thumbnail = thumbnailBlob ? URL.createObjectURL(thumbnailBlob) : "";
     }
   }
 
@@ -2338,6 +2360,8 @@ async function buildLocalItem(file) {
     title,
     subtitle: subtitleParts.join(" | "),
     thumbnail,
+    thumbnailBlob,
+    fileBlob: file,
     url,
     kind: "local"
   };
@@ -2364,6 +2388,7 @@ async function loadLocalFiles(fileList) {
     .sort((a, b) => a.title.localeCompare(b.title, "es", { sensitivity: "base" }));
 
   state.queue[state.mode].local = [...state.library[state.mode].local];
+  await persistLocalLibrary(state.mode);
 
   setResultsVisible(true);
   renderLibrary();
@@ -2406,8 +2431,89 @@ function onMediaEnded() {
   nextTrack();
 }
 
+function supportsPlaybackNotifications() {
+  return "Notification" in window && "serviceWorker" in navigator;
+}
+
+async function ensurePlaybackNotificationPermission(fromUserGesture = false) {
+  if (!supportsPlaybackNotifications()) return "denied";
+  if (Notification.permission !== "default") return Notification.permission;
+  if (!fromUserGesture || hasAskedNotificationPermission) return Notification.permission;
+  hasAskedNotificationPermission = true;
+  try {
+    return await Notification.requestPermission();
+  } catch (_) {
+    return Notification.permission;
+  }
+}
+
+function playbackNotificationAction() {
+  return state.isPlaying
+    ? { action: "pause", title: "Pausar" }
+    : { action: "play", title: "Reproducir" };
+}
+
+async function updatePlaybackNotification(options = {}) {
+  if (!state.current || !supportsPlaybackNotifications()) return;
+  const fromUserGesture = Boolean(options.fromUserGesture);
+  const permission = await ensurePlaybackNotificationPermission(fromUserGesture);
+  if (permission !== "granted") return;
+
+  const key = `${state.current.id}|${state.isPlaying ? 1 : 0}|${state.mode}|${state.source}`;
+  if (!options.force && key === playbackNotificationKey) return;
+  playbackNotificationKey = key;
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification(state.current.title || "Reproductor Duo", {
+      body: state.current.subtitle || (state.source === "online" ? "Modo online" : "Modo local"),
+      icon: state.current.thumbnail || "./icon-192.svg",
+      badge: "./icon-192.svg",
+      tag: PLAYBACK_NOTIFICATION_TAG,
+      renotify: false,
+      silent: true,
+      requireInteraction: false,
+      data: {
+        kind: "playback-controls",
+        currentId: state.current.id,
+        mode: state.mode,
+        source: state.source,
+        isPlaying: state.isPlaying
+      },
+      actions: [
+        { action: "previous", title: "Anterior" },
+        playbackNotificationAction(),
+        { action: "next", title: "Siguiente" }
+      ]
+    });
+  } catch (_) {
+    // Ignore notification failures in unsupported environments.
+  }
+}
+
+async function clearPlaybackNotification() {
+  playbackNotificationKey = "";
+  if (!supportsPlaybackNotifications()) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const notifications = await registration.getNotifications({ tag: PLAYBACK_NOTIFICATION_TAG });
+    notifications.forEach((n) => n.close());
+  } catch (_) {
+    // Ignore clear failures.
+  }
+}
+
 function updateMediaSession() {
-  if (!("mediaSession" in navigator) || !state.current) return;
+  if (!("mediaSession" in navigator)) {
+    updatePlaybackNotification().catch(() => null);
+    return;
+  }
+
+  if (!state.current) {
+    navigator.mediaSession.playbackState = "none";
+    clearPlaybackNotification().catch(() => null);
+    return;
+  }
 
   const item = state.current;
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -2424,6 +2530,7 @@ function updateMediaSession() {
   });
 
   navigator.mediaSession.playbackState = state.isPlaying ? "playing" : "paused";
+  updatePlaybackNotification().catch(() => null);
 }
 
 function setMediaActionHandlers() {
@@ -2433,6 +2540,7 @@ function setMediaActionHandlers() {
   try { navigator.mediaSession.setActionHandler("pause", () => togglePause()); } catch (_) {}
   try { navigator.mediaSession.setActionHandler("previoustrack", () => previousTrack()); } catch (_) {}
   try { navigator.mediaSession.setActionHandler("nexttrack", () => nextTrack()); } catch (_) {}
+  try { navigator.mediaSession.setActionHandler("stop", () => togglePause()); } catch (_) {}
   try { navigator.mediaSession.setActionHandler("seekbackward", (details) => seekBy(-(details.seekOffset || 10))); } catch (_) {}
   try { navigator.mediaSession.setActionHandler("seekforward", (details) => seekBy(details.seekOffset || 10)); } catch (_) {}
   try {
@@ -2449,6 +2557,21 @@ function setMediaActionHandlers() {
 }
 
 function bindEvents() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const action = event?.data?.type;
+      if (!action) return;
+      if (action === "playback:previous") previousTrack();
+      if (action === "playback:next") nextTrack();
+      if (action === "playback:play") togglePlay();
+      if (action === "playback:pause") togglePause();
+      if (action === "playback:toggle") {
+        if (state.isPlaying) togglePause();
+        else togglePlay();
+      }
+    });
+  }
+
   refs.modeMusic.addEventListener("click", () => setMode("music"));
   refs.modeVideo.addEventListener("click", () => setMode("video"));
   refs.sourceLocal.addEventListener("click", () => setSource("local"));
@@ -2710,6 +2833,110 @@ function normalizeText(value) {
   return decodeHtmlEntities(value).replace(/\s+/g, " ").trim();
 }
 
+function openLocalLibraryDb() {
+  if (!window.indexedDB) return Promise.resolve(null);
+  if (localDbPromise) return localDbPromise;
+
+  localDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(LOCAL_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(LOCAL_DB_STORE)) {
+        const store = db.createObjectStore(LOCAL_DB_STORE, { keyPath: "key" });
+        store.createIndex("mode", "mode", { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }).catch(() => null);
+
+  return localDbPromise;
+}
+
+function persistableLocalRow(mode, item) {
+  return {
+    key: `${mode}:${item.id}`,
+    mode,
+    id: item.id,
+    title: item.title,
+    subtitle: item.subtitle,
+    kind: item.kind || "local",
+    fileBlob: item.fileBlob || null,
+    thumbnailBlob: item.thumbnailBlob || null
+  };
+}
+
+async function persistLocalLibrary(mode) {
+  const db = await openLocalLibraryDb();
+  if (!db) return;
+
+  const items = (state.library[mode]?.local || []).filter((x) => x.fileBlob);
+  await new Promise((resolve) => {
+    const tx = db.transaction(LOCAL_DB_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_DB_STORE);
+    const index = store.index("mode");
+    const req = index.openCursor(IDBKeyRange.only(mode));
+
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        items.forEach((item) => store.put(persistableLocalRow(mode, item)));
+        return;
+      }
+      store.delete(cursor.primaryKey);
+      cursor.continue();
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+async function restoreLocalLibraryMode(mode) {
+  const db = await openLocalLibraryDb();
+  if (!db) return [];
+
+  return new Promise((resolve) => {
+    const tx = db.transaction(LOCAL_DB_STORE, "readonly");
+    const store = tx.objectStore(LOCAL_DB_STORE);
+    const index = store.index("mode");
+    const req = index.getAll(IDBKeyRange.only(mode));
+
+    req.onsuccess = () => {
+      const rows = Array.isArray(req.result) ? req.result : [];
+      const items = rows
+        .map((row) => {
+          if (!row?.fileBlob) return null;
+          return {
+            id: row.id,
+            title: row.title || "Sin titulo",
+            subtitle: row.subtitle || "Local",
+            kind: row.kind || "local",
+            fileBlob: row.fileBlob,
+            thumbnailBlob: row.thumbnailBlob || null,
+            url: URL.createObjectURL(row.fileBlob),
+            thumbnail: row.thumbnailBlob ? URL.createObjectURL(row.thumbnailBlob) : ""
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.title.localeCompare(b.title, "es", { sensitivity: "base" }));
+      resolve(items);
+    };
+
+    req.onerror = () => resolve([]);
+  });
+}
+
+async function restoreLocalLibraries() {
+  const music = await restoreLocalLibraryMode("music");
+  const video = await restoreLocalLibraryMode("video");
+  state.library.music.local = music;
+  state.library.video.local = video;
+  state.queue.music.local = [...music];
+  state.queue.video.local = [...video];
+}
+
 window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
   state.ytPlayer = new YT.Player("youtubePlayer", {
     width: "100%",
@@ -2759,7 +2986,7 @@ function tick() {
   requestAnimationFrame(tick);
 }
 
-function bootstrap() {
+async function bootstrap() {
   state.youtubeApiKey = String(appConfig.youtubeApiKey || "").trim() || loadApiKey();
   if (refs.ytApiKeyInput) {
     refs.ytApiKeyInput.value = state.youtubeApiKey;
@@ -2779,6 +3006,8 @@ function bootstrap() {
   }
 
   bindEvents();
+
+  await restoreLocalLibraries();
 
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
@@ -2824,7 +3053,7 @@ function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=28", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=30", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

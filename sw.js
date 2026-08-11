@@ -1,4 +1,4 @@
-const CACHE = "duoplayer-v28";
+const CACHE = "duoplayer-v30";
 const ASSETS = [
   "./",
   "./index.html",
@@ -35,4 +35,48 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html")))
   );
+});
+
+async function notifyClients(type) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  windows.forEach((client) => {
+    client.postMessage({ type });
+  });
+}
+
+self.addEventListener("notificationclick", (event) => {
+  const action = event.action || "";
+  event.notification.close();
+
+  event.waitUntil((async () => {
+    if (action === "previous") {
+      await notifyClients("playback:previous");
+      return;
+    }
+    if (action === "next") {
+      await notifyClients("playback:next");
+      return;
+    }
+    if (action === "play") {
+      await notifyClients("playback:play");
+      return;
+    }
+    if (action === "pause") {
+      await notifyClients("playback:pause");
+      return;
+    }
+
+    const windowClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (windowClients.length > 0) {
+      const first = windowClients[0];
+      await first.focus();
+      await notifyClients("playback:toggle");
+      return;
+    }
+
+    const newClient = await self.clients.openWindow("./");
+    if (newClient) {
+      await notifyClients("playback:toggle");
+    }
+  })());
 });
