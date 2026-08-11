@@ -2589,7 +2589,7 @@ function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=25", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=26", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
