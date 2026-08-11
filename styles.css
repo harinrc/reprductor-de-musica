@@ -410,11 +410,11 @@ input[type="password"] {
   bottom: auto;
   transform: none;
   width: min(980px, calc(100vw - 54px));
-  min-width: 760px;
-  min-height: 420px;
+  min-width: 840px;
+  min-height: 500px;
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 96px);
-  height: min(70vh, 690px);
+  height: min(78vh, 720px);
   resize: both;
   overflow: auto;
   overscroll-behavior: contain;
@@ -734,19 +734,19 @@ input[type="password"] {
     "head"
     "media"
     "meta"
-    "queue"
     "controls"
     "seek"
-    "advanced";
+    "advanced"
+    "queue";
 }
 
 .now-playing.is-compact .in-player-queue .track-list {
-  min-height: 170px;
+  min-height: 200px;
   max-height: 34vh;
 }
 
 .now-playing.is-tight .in-player-queue .track-list {
-  min-height: 150px;
+  min-height: 130px;
   max-height: 30vh;
 }
 
@@ -756,10 +756,10 @@ input[type="password"] {
     "head"
     "media"
     "meta"
-    "queue"
     "controls"
     "seek"
-    "advanced";
+    "advanced"
+    "queue";
 }
 
 .now-playing.is-tight .music-art {
