@@ -387,6 +387,28 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       if (appended >= targetAppend) break;
     }
 
+    if (!appended) {
+      const fromResults = (qState.results || [])
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .slice(0, Math.max(6, minAhead));
+      fromResults.forEach((item) => {
+        related.push(markAsRadioAdded(item));
+        existing.add(item.id);
+        appended += 1;
+      });
+    }
+
+    if (!appended) {
+      const fromDiscover = (state.discoverCache[state.mode]?.online || [])
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .slice(0, Math.max(6, minAhead));
+      fromDiscover.forEach((item) => {
+        related.push(markAsRadioAdded(item));
+        existing.add(item.id);
+        appended += 1;
+      });
+    }
+
     if (!appended && state.current?.title) {
       const hint = artistHint(state.current) || "";
       const query = hint ? `${state.current.title} ${hint}` : state.current.title;
@@ -401,7 +423,21 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       });
     }
 
-    if (!appended) return;
+    if (!appended) {
+      const fromFallback = getFallbackCatalogForMood(state.selectedMood)
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .slice(0, Math.max(4, Math.floor(minAhead / 2)));
+      fromFallback.forEach((item) => {
+        related.push(markAsRadioAdded(item));
+        existing.add(item.id);
+        appended += 1;
+      });
+    }
+
+    if (!appended) {
+      updateOnlineHint("Radio creciendo: sin nuevas relacionadas en este intento.");
+      return;
+    }
 
     updateOnlineHint(`Radio agrego +${appended} relacionadas.`);
 
