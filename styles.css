@@ -409,9 +409,9 @@ input[type="password"] {
   top: 86px;
   bottom: auto;
   transform: none;
-  width: min(980px, calc(100vw - 54px));
-  min-width: 840px;
-  min-height: 500px;
+  width: min(980px, calc(100vw - 32px));
+  min-width: 360px;
+  min-height: 360px;
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 96px);
   height: min(78vh, 720px);
@@ -526,14 +526,18 @@ input[type="password"] {
   gap: 12px;
   max-width: 520px;
   margin: 0 auto;
+  min-width: 0;
 }
 
 .seek-row {
   grid-area: seek;
+  min-width: 0;
 }
 
 .advanced-row {
   grid-area: advanced;
+  justify-content: center;
+  min-width: 0;
 }
 
 .video-wrap {
@@ -783,6 +787,20 @@ input[type="password"] {
 
 .advanced-row input[type="range"] {
   width: 106px;
+}
+
+.controls,
+.advanced-row,
+.seek-row {
+  min-width: 0;
+}
+
+.advanced-row {
+  flex-wrap: wrap;
+}
+
+.advanced-row label {
+  flex-wrap: wrap;
 }
 
 .mini-player {

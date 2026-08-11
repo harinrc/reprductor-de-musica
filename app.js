@@ -694,8 +694,10 @@ function applyPlayerAdaptiveLayout() {
   fitPlayerToViewport();
   const w = panel.clientWidth;
   const h = panel.clientHeight;
-  panel.classList.toggle("is-compact", w < 900);
-  panel.classList.toggle("is-tight", h < 680);
+  const compactByViewport = window.innerWidth < 1200 || window.innerHeight < 820;
+  const tightByViewport = window.innerHeight < 720;
+  panel.classList.toggle("is-compact", compactByViewport || w < 1040 || h < 720);
+  panel.classList.toggle("is-tight", tightByViewport || w < 900 || h < 640);
 }
 
 function fitPlayerToViewport() {
