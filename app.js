@@ -695,7 +695,7 @@ function applyPlayerAdaptiveLayout() {
   const w = panel.clientWidth;
   const h = panel.clientHeight;
   panel.classList.toggle("is-compact", w < 920);
-  panel.classList.toggle("is-tight", h < 650);
+  panel.classList.toggle("is-tight", h < 760);
 }
 
 function fitPlayerToViewport() {
@@ -2159,7 +2159,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=21", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=22", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

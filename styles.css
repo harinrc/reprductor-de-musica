@@ -416,7 +416,10 @@ input[type="password"] {
   max-height: calc(100vh - 96px);
   height: min(70vh, 690px);
   resize: both;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  -webkit-overflow-scrolling: touch;
   z-index: 22;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(290px, 0.9fr);
@@ -742,7 +745,7 @@ input[type="password"] {
 }
 
 .now-playing.is-tight .in-player-queue .track-list {
-  min-height: 130px;
+  min-height: 110px;
 }
 
 .now-playing.is-tight {
@@ -758,11 +761,11 @@ input[type="password"] {
 }
 
 .now-playing.is-tight .music-art {
-  width: min(100%, 420px);
+  width: min(100%, 300px);
 }
 
 .now-playing.is-tight .video-wrap {
-  width: min(100%, 560px);
+  width: min(100%, 430px);
 }
 
 .advanced-row .chip {
