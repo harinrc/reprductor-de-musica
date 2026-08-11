@@ -39,8 +39,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [] },
-    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [] }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [], searchSeed: "", growthCycle: 0 },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [], searchSeed: "", growthCycle: 0 }
   }
 };
 
@@ -325,6 +325,43 @@ function rememberOnlinePlayback(item) {
   qState.playedIds = [item.id, ...qState.playedIds.filter((id) => id !== item.id)].slice(0, 140);
 }
 
+function buildRadioRelatedQueries(qState) {
+  const queryBase = [];
+  const currentTitle = normalizeText(state.current?.title || "");
+  const artist = artistHint(state.current || {});
+  const seed = normalizeText(qState.searchSeed || "");
+  const cycle = Number(qState.growthCycle || 0);
+  const modifiers = ["official", "audio", "lyrics", "live", "mix", "remix", "playlist"];
+  const mod = modifiers[cycle % modifiers.length];
+
+  if (seed) queryBase.push(seed);
+  if (currentTitle) queryBase.push(currentTitle);
+  if (artist && currentTitle) queryBase.push(`${artist} ${currentTitle}`);
+  if (seed && artist) queryBase.push(`${seed} ${artist}`);
+  if (seed) queryBase.push(`${seed} ${mod}`);
+  if (currentTitle) queryBase.push(`${currentTitle} ${mod}`);
+
+  return uniqueItems(queryBase.map((q) => ({ id: q.toLowerCase(), q }))).map((x) => x.q).slice(0, 6);
+}
+
+async function injectRadioFromQueryVariations(qState, related, existing, played, minAhead) {
+  const queries = buildRadioRelatedQueries(qState);
+  let appended = 0;
+  for (const query of queries) {
+    const candidates = await fetchYouTubeResults(query).catch(() => []);
+    for (const item of candidates) {
+      if (!item?.id || existing.has(item.id) || played.has(item.id)) continue;
+      related.push(markAsRadioAdded(item));
+      existing.add(item.id);
+      appended += 1;
+      if (appended >= Math.max(10, minAhead)) break;
+    }
+    if (appended >= Math.max(10, minAhead)) break;
+  }
+  qState.growthCycle = Number(qState.growthCycle || 0) + 1;
+  return appended;
+}
+
 async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
   if (state.source !== "online" || state.current?.kind !== "youtube") return;
   const qState = onlineQueueState();
@@ -385,6 +422,10 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       }
 
       if (appended >= targetAppend) break;
+    }
+
+    if (!appended) {
+      appended += await injectRadioFromQueryVariations(qState, related, existing, played, minAhead);
     }
 
     if (!appended) {
@@ -1191,6 +1232,10 @@ async function startSmartPlayback(item, sourceItems = null) {
     qState.playedIds = [item.id];
     qState.seedTrail = [];
     qState.lastSeedId = item.id || "";
+    if (!qState.searchSeed) {
+      qState.searchSeed = normalizeText(item.title || "");
+    }
+    qState.growthCycle = 0;
     qState.view = "related";
     state.queue[state.mode][state.source] = qState.related.length ? qState.related : [item];
   } else {
@@ -1682,6 +1727,10 @@ async function handleQueueEnd() {
 async function searchOnline() {
   const query = refs.onlineQuery.value.trim();
   if (!query) return;
+
+  const qState = onlineQueueState();
+  qState.searchSeed = query;
+  qState.growthCycle = 0;
 
   refs.onlineSearchBtn.disabled = true;
   refs.onlineSearchBtn.textContent = "Buscando...";
