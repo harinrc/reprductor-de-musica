@@ -39,8 +39,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "" },
-    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "" }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [] },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [] }
   }
 };
 
@@ -298,6 +298,13 @@ async function fetchRecommendationsSafe(videoId) {
   }
 }
 
+function rememberOnlinePlayback(item) {
+  if (!isOnlineQueueMode() || item?.kind !== "youtube" || !item?.id) return;
+  const qState = onlineQueueState();
+  if (!Array.isArray(qState.playedIds)) qState.playedIds = [];
+  qState.playedIds = [item.id, ...qState.playedIds.filter((id) => id !== item.id)].slice(0, 140);
+}
+
 async function ensureOnlineQueueGrowth(minAhead = 5) {
   if (state.source !== "online" || state.current?.kind !== "youtube") return;
   const qState = onlineQueueState();
@@ -310,21 +317,57 @@ async function ensureOnlineQueueGrowth(minAhead = 5) {
   const ahead = related.length - (idx + 1);
   if (ahead >= minAhead) return;
 
-  const seed = related[related.length - 1] || state.current;
-  if (!seed?.youtubeId) return;
-  if (qState.lastSeedId === seed.id && ahead > 0) return;
+  if (!Array.isArray(qState.seedTrail)) qState.seedTrail = [];
+
+  const seedCandidates = uniqueItems([
+    related[idx],
+    related[idx + 1],
+    state.current,
+    related[related.length - 1],
+    ...qState.results.slice(0, 8)
+  ]).filter((x) => x?.youtubeId);
+
+  const existing = new Set(related.map((x) => x.id));
+  const played = new Set(qState.playedIds || []);
+  let appended = 0;
+  const targetAppend = Math.max(6, minAhead * 2);
 
   qState.loading = true;
-  qState.lastSeedId = seed.id;
   try {
-    const rec = await fetchRecommendationsSafe(seed.youtubeId);
-    if (!rec.length) return;
+    for (const seed of seedCandidates) {
+      if (!seed?.youtubeId) continue;
+      if (qState.seedTrail.includes(seed.id) && appended > 0) continue;
 
-    const existing = new Set(related.map((x) => x.id));
-    const fresh = rec.filter((r) => r.id && !existing.has(r.id));
-    if (!fresh.length) return;
+      const rec = await fetchRecommendationsSafe(seed.youtubeId);
+      if (!rec.length) continue;
 
-    related.push(...fresh);
+      const ranked = rec
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .map((r) => ({
+          item: r,
+          score: onlineSimilarityScore(state.current, r) + (onlineSimilarityScore(seed, r) * 0.7)
+        }))
+        .sort((a, b) => b.score - a.score)
+        .map((x) => x.item);
+
+      if (!ranked.length) continue;
+
+      qState.seedTrail = [seed.id, ...qState.seedTrail.filter((id) => id !== seed.id)].slice(0, 18);
+      qState.lastSeedId = seed.id;
+
+      for (const item of ranked) {
+        if (appended >= targetAppend) break;
+        if (existing.has(item.id) || played.has(item.id)) continue;
+        related.push(item);
+        existing.add(item.id);
+        appended += 1;
+      }
+
+      if (appended >= targetAppend) break;
+    }
+
+    if (!appended) return;
+
     state.queue[state.mode][state.source] = related;
     renderQueue();
   } finally {
@@ -1066,6 +1109,9 @@ async function startSmartPlayback(item, sourceItems = null) {
     const qState = onlineQueueState();
     qState.results = base.length ? [...base] : [item];
     qState.related = buildOnlineQueue(item, qState.results);
+    qState.playedIds = [item.id];
+    qState.seedTrail = [];
+    qState.lastSeedId = item.id || "";
     qState.view = "related";
     state.queue[state.mode][state.source] = qState.related.length ? qState.related : [item];
   } else {
@@ -1252,6 +1298,7 @@ function playItem(item, queuePosition = null) {
   if (!item) return;
 
   setPlayerOpen(true);
+  rememberOnlinePlayback(item);
 
   state.current = item;
   state.isPlaying = true;
@@ -1512,10 +1559,24 @@ async function handleQueueEnd() {
     return;
   }
 
+  if (isOnlineQueueMode() && state.current.kind === "youtube") {
+    const qState = onlineQueueState();
+    await ensureOnlineQueueGrowth(10);
+    const nextIdx = nowIndex() + 1;
+    if (qState.related[nextIdx]) {
+      state.queue[state.mode][state.source] = qState.related;
+      playItem(qState.related[nextIdx], nextIdx);
+      return;
+    }
+  }
+
   if (state.current.kind === "youtube") {
     const rec = await fetchRecommendationsSafe(state.current.youtubeId);
     if (rec.length) {
-      const picked = rec[0];
+      const qState = isOnlineQueueMode() ? onlineQueueState() : null;
+      const played = new Set(qState?.playedIds || []);
+      const existing = new Set(nowQueue().map((x) => x.id));
+      const picked = rec.find((x) => x?.id && !existing.has(x.id) && !played.has(x.id)) || rec[0];
       nowQueue().push(picked);
       renderQueue();
       playItem(picked, nowQueue().length - 1);
