@@ -39,8 +39,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [], searchSeed: "", growthCycle: 0 },
-    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], seedTrail: [], searchSeed: "", growthCycle: 0 }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0 },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0 }
   }
 };
 
@@ -167,6 +167,39 @@ function markAsRadioAdded(item) {
     addedByRadio: true,
     addedByRadioAt: Date.now()
   };
+}
+
+function trackSignature(item) {
+  const raw = normalizeText(item?.title || "").toLowerCase();
+  if (!raw) return "";
+  const stripped = raw
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
+    .replace(/official|video|lyrics|lyric|audio|hd|4k|remaster(?:ed)?|version|live|mix|playlist|feat\.?|ft\.?|mv/gi, " ")
+    .replace(/[^a-z0-9\s-]/g, " ");
+
+  const parts = stripped
+    .split(/\s+/)
+    .filter((x) => x && x.length > 2);
+
+  const artist = artistHint(item);
+  const core = parts.slice(0, 6).join(" ");
+  return `${artist}|${core}`.trim();
+}
+
+function pickDiverseTracks(items, { max = 24, blockedSignatures = new Set(), blockedIds = new Set() } = {}) {
+  const picked = [];
+  const seenIds = new Set(blockedIds);
+  const seenSig = new Set(blockedSignatures);
+  for (const item of items || []) {
+    if (!item?.id || seenIds.has(item.id)) continue;
+    const sig = trackSignature(item);
+    if (sig && seenSig.has(sig)) continue;
+    picked.push(item);
+    seenIds.add(item.id);
+    if (sig) seenSig.add(sig);
+    if (picked.length >= max) break;
+  }
+  return picked;
 }
 
 const refs = {
@@ -323,6 +356,11 @@ function rememberOnlinePlayback(item) {
   const qState = onlineQueueState();
   if (!Array.isArray(qState.playedIds)) qState.playedIds = [];
   qState.playedIds = [item.id, ...qState.playedIds.filter((id) => id !== item.id)].slice(0, 140);
+  if (!Array.isArray(qState.playedSignatures)) qState.playedSignatures = [];
+  const sig = trackSignature(item);
+  if (sig) {
+    qState.playedSignatures = [sig, ...qState.playedSignatures.filter((x) => x !== sig)].slice(0, 140);
+  }
 }
 
 function buildRadioRelatedQueries(qState) {
@@ -344,15 +382,23 @@ function buildRadioRelatedQueries(qState) {
   return uniqueItems(queryBase.map((q) => ({ id: q.toLowerCase(), q }))).map((x) => x.q).slice(0, 6);
 }
 
-async function injectRadioFromQueryVariations(qState, related, existing, played, minAhead) {
+async function injectRadioFromQueryVariations(qState, related, existing, played, minAhead, existingSignatures = new Set()) {
   const queries = buildRadioRelatedQueries(qState);
   let appended = 0;
   for (const query of queries) {
     const candidates = await fetchYouTubeResults(query).catch(() => []);
-    for (const item of candidates) {
+    const diverse = pickDiverseTracks(candidates, {
+      max: Math.max(10, minAhead),
+      blockedSignatures: existingSignatures,
+      blockedIds: existing
+    });
+    for (const item of diverse) {
       if (!item?.id || existing.has(item.id) || played.has(item.id)) continue;
+      const sig = trackSignature(item);
+      if (sig && existingSignatures.has(sig)) continue;
       related.push(markAsRadioAdded(item));
       existing.add(item.id);
+      if (sig) existingSignatures.add(sig);
       appended += 1;
       if (appended >= Math.max(10, minAhead)) break;
     }
@@ -386,6 +432,11 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
 
   const existing = new Set(related.map((x) => x.id));
   const played = new Set(qState.playedIds || []);
+  const existingSignatures = new Set((qState.playedSignatures || []).filter(Boolean));
+  related.forEach((item) => {
+    const sig = trackSignature(item);
+    if (sig) existingSignatures.add(sig);
+  });
   let appended = 0;
   const targetAppend = Math.max(6, minAhead * 2);
 
@@ -399,8 +450,14 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       const rec = await fetchRecommendationsSafe(seed.youtubeId);
       if (!rec.length) continue;
 
-      const ranked = rec
-        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+      const diverseRec = pickDiverseTracks(rec, {
+        max: targetAppend,
+        blockedSignatures: existingSignatures,
+        blockedIds: existing
+      });
+
+      const ranked = diverseRec
+        .filter((r) => r?.id && !played.has(r.id))
         .map((r) => ({
           item: r,
           score: onlineSimilarityScore(state.current, r) + (onlineSimilarityScore(seed, r) * 0.7)
@@ -416,8 +473,11 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       for (const item of ranked) {
         if (appended >= targetAppend) break;
         if (existing.has(item.id) || played.has(item.id)) continue;
+        const sig = trackSignature(item);
+        if (sig && existingSignatures.has(sig)) continue;
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        if (sig) existingSignatures.add(sig);
         appended += 1;
       }
 
@@ -425,27 +485,41 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
     }
 
     if (!appended) {
-      appended += await injectRadioFromQueryVariations(qState, related, existing, played, minAhead);
+      appended += await injectRadioFromQueryVariations(qState, related, existing, played, minAhead, existingSignatures);
     }
 
     if (!appended) {
-      const fromResults = (qState.results || [])
-        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
-        .slice(0, Math.max(6, minAhead));
+      const fromResults = pickDiverseTracks(
+        (qState.results || []).filter((r) => r?.id && !played.has(r.id)),
+        {
+          max: Math.max(6, minAhead),
+          blockedSignatures: existingSignatures,
+          blockedIds: existing
+        }
+      );
       fromResults.forEach((item) => {
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        const sig = trackSignature(item);
+        if (sig) existingSignatures.add(sig);
         appended += 1;
       });
     }
 
     if (!appended) {
-      const fromDiscover = (state.discoverCache[state.mode]?.online || [])
-        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
-        .slice(0, Math.max(6, minAhead));
+      const fromDiscover = pickDiverseTracks(
+        (state.discoverCache[state.mode]?.online || []).filter((r) => r?.id && !played.has(r.id)),
+        {
+          max: Math.max(6, minAhead),
+          blockedSignatures: existingSignatures,
+          blockedIds: existing
+        }
+      );
       fromDiscover.forEach((item) => {
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        const sig = trackSignature(item);
+        if (sig) existingSignatures.add(sig);
         appended += 1;
       });
     }
@@ -454,23 +528,37 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       const hint = artistHint(state.current) || "";
       const query = hint ? `${state.current.title} ${hint}` : state.current.title;
       const more = await fetchYouTubeResults(query).catch(() => []);
-      const fallback = more
-        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
-        .slice(0, Math.max(8, minAhead));
+      const fallback = pickDiverseTracks(
+        more.filter((r) => r?.id && !played.has(r.id)),
+        {
+          max: Math.max(8, minAhead),
+          blockedSignatures: existingSignatures,
+          blockedIds: existing
+        }
+      );
       fallback.forEach((item) => {
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        const sig = trackSignature(item);
+        if (sig) existingSignatures.add(sig);
         appended += 1;
       });
     }
 
     if (!appended) {
-      const fromFallback = getFallbackCatalogForMood(state.selectedMood)
-        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
-        .slice(0, Math.max(4, Math.floor(minAhead / 2)));
+      const fromFallback = pickDiverseTracks(
+        getFallbackCatalogForMood(state.selectedMood).filter((r) => r?.id && !played.has(r.id)),
+        {
+          max: Math.max(4, Math.floor(minAhead / 2)),
+          blockedSignatures: existingSignatures,
+          blockedIds: existing
+        }
+      );
       fromFallback.forEach((item) => {
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        const sig = trackSignature(item);
+        if (sig) existingSignatures.add(sig);
         appended += 1;
       });
     }
@@ -1206,8 +1294,12 @@ function buildSmartQueue(seed, candidates) {
 }
 
 function buildOnlineQueue(seed, candidates) {
+  const seedSig = trackSignature(seed);
+  const blocked = new Set(seedSig ? [seedSig] : []);
+  const blockedIds = new Set(seed?.id ? [seed.id] : []);
+  const diverse = pickDiverseTracks(candidates, { max: 40, blockedSignatures: blocked, blockedIds });
   const scored = candidates
-    .filter((x) => x.id !== seed.id)
+    .filter((x) => diverse.some((d) => d.id === x.id))
     .map((x) => ({ item: x, score: onlineSimilarityScore(seed, x) }))
     .sort((a, b) => b.score - a.score);
 
@@ -1226,10 +1318,16 @@ async function startSmartPlayback(item, sourceItems = null) {
 
   if (onlineYoutube) {
     const qState = onlineQueueState();
-    qState.results = base.length ? [...base] : [item];
+    const seedSig = trackSignature(item);
+    qState.results = pickDiverseTracks(base.length ? [...base] : [item], {
+      max: 80,
+      blockedSignatures: new Set(seedSig ? [seedSig] : []),
+      blockedIds: new Set(item.id ? [item.id] : [])
+    });
     qState.related = buildOnlineQueue(item, qState.results);
     qState.loading = false;
     qState.playedIds = [item.id];
+    qState.playedSignatures = seedSig ? [seedSig] : [];
     qState.seedTrail = [];
     qState.lastSeedId = item.id || "";
     if (!qState.searchSeed) {
@@ -1702,8 +1800,13 @@ async function handleQueueEnd() {
     if (rec.length) {
       const qState = isOnlineQueueMode() ? onlineQueueState() : null;
       const played = new Set(qState?.playedIds || []);
+      const playedSignatures = new Set(qState?.playedSignatures || []);
       const existing = new Set(nowQueue().map((x) => x.id));
-      const picked = rec.find((x) => x?.id && !existing.has(x.id) && !played.has(x.id)) || rec[0];
+      const picked = rec.find((x) => {
+        if (!x?.id || existing.has(x.id) || played.has(x.id)) return false;
+        const sig = trackSignature(x);
+        return !sig || !playedSignatures.has(sig);
+      }) || rec[0];
       nowQueue().push(markAsRadioAdded(picked));
       updateOnlineHint("Radio agrego +1 relacionada.");
       renderQueue();
