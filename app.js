@@ -2159,7 +2159,7 @@ function bootstrap() {
   tick();
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=22", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=23", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

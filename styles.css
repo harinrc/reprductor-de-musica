@@ -734,18 +734,20 @@ input[type="password"] {
     "head"
     "media"
     "meta"
+    "queue"
     "controls"
     "seek"
-    "advanced"
-    "queue";
+    "advanced";
 }
 
 .now-playing.is-compact .in-player-queue .track-list {
-  min-height: 220px;
+  min-height: 170px;
+  max-height: 34vh;
 }
 
 .now-playing.is-tight .in-player-queue .track-list {
-  min-height: 110px;
+  min-height: 150px;
+  max-height: 30vh;
 }
 
 .now-playing.is-tight {
@@ -754,10 +756,10 @@ input[type="password"] {
     "head"
     "media"
     "meta"
+    "queue"
     "controls"
     "seek"
-    "advanced"
-    "queue";
+    "advanced";
 }
 
 .now-playing.is-tight .music-art {
