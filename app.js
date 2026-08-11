@@ -316,7 +316,7 @@ function rememberOnlinePlayback(item) {
   qState.playedIds = [item.id, ...qState.playedIds.filter((id) => id !== item.id)].slice(0, 140);
 }
 
-async function ensureOnlineQueueGrowth(minAhead = 5) {
+async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
   if (state.source !== "online" || state.current?.kind !== "youtube") return;
   const qState = onlineQueueState();
   if (qState.loading) return;
@@ -326,7 +326,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5) {
 
   const idx = Math.max(0, nowIndex());
   const ahead = related.length - (idx + 1);
-  if (ahead >= minAhead) return;
+  if (ahead >= minAhead && related.length >= minTotal) return;
 
   if (!Array.isArray(qState.seedTrail)) qState.seedTrail = [];
 
@@ -376,6 +376,20 @@ async function ensureOnlineQueueGrowth(minAhead = 5) {
       }
 
       if (appended >= targetAppend) break;
+    }
+
+    if (!appended && state.current?.title) {
+      const hint = artistHint(state.current) || "";
+      const query = hint ? `${state.current.title} ${hint}` : state.current.title;
+      const more = await fetchYouTubeResults(query).catch(() => []);
+      const fallback = more
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .slice(0, Math.max(8, minAhead));
+      fallback.forEach((item) => {
+        related.push(item);
+        existing.add(item.id);
+        appended += 1;
+      });
     }
 
     if (!appended) return;
@@ -1152,7 +1166,7 @@ async function startSmartPlayback(item, sourceItems = null) {
       }
       renderQueue();
     }
-    ensureOnlineQueueGrowth(6).catch(() => null);
+    ensureOnlineQueueGrowth(18, 52).catch(() => null);
   }
 }
 
@@ -1342,7 +1356,7 @@ function playItem(item, queuePosition = null) {
   renderQueue();
 
   if (state.source === "online" && item.kind === "youtube") {
-    ensureOnlineQueueGrowth(6).catch(() => null);
+    ensureOnlineQueueGrowth(16, 48).catch(() => null);
   }
 }
 
@@ -1575,7 +1589,7 @@ async function handleQueueEnd() {
 
   if (isOnlineQueueMode() && state.current.kind === "youtube") {
     const qState = onlineQueueState();
-    await ensureOnlineQueueGrowth(10);
+    await ensureOnlineQueueGrowth(20, 56);
     const nextIdx = nowIndex() + 1;
     if (qState.related[nextIdx]) {
       state.queue[state.mode][state.source] = qState.related;
@@ -2363,7 +2377,7 @@ function bootstrap() {
   if (!window.__duoQueueGrowthTimer) {
     window.__duoQueueGrowthTimer = window.setInterval(() => {
       if (state.source !== "online" || state.current?.kind !== "youtube" || !state.isPlaying) return;
-      ensureOnlineQueueGrowth(8).catch(() => null);
+      ensureOnlineQueueGrowth(20, 56).catch(() => null);
     }, 15000);
   }
 
