@@ -85,6 +85,16 @@ const invidiousInstances = [
   "https://invidious.projectsegfau.lt"
 ];
 
+const runtimeCache = {
+  search: new Map(),
+  recommendations: new Map(),
+  discovery: new Map()
+};
+
+const SEARCH_CACHE_TTL = 10 * 60 * 1000;
+const RECOMMENDATION_CACHE_TTL = 20 * 60 * 1000;
+const DISCOVERY_CACHE_TTL = 4 * 60 * 1000;
+
 const appConfig = window.DUO_CONFIG || {};
 
 function hasLocalApi() {
@@ -113,6 +123,40 @@ function saveApiKey(value) {
 
 function isConfigMode() {
   return new URLSearchParams(location.search).get("config") === "1";
+}
+
+function getCachedValue(cache, key, ttlMs) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if ((Date.now() - entry.time) > ttlMs) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedValue(cache, key, value) {
+  cache.set(key, { time: Date.now(), value });
+  return value;
+}
+
+function uniqueItems(items) {
+  const seen = new Set();
+  const result = [];
+  items.forEach((item) => {
+    if (!item) return;
+    const key = item.id || item.youtubeId || `${item.title || ""}|${item.subtitle || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(item);
+  });
+  return result;
+}
+
+function rotateItems(items, offset) {
+  if (!items.length) return items;
+  const index = ((offset % items.length) + items.length) % items.length;
+  return items.slice(index).concat(items.slice(0, index));
 }
 
 const refs = {
@@ -236,8 +280,17 @@ function queueItemsForRender() {
 }
 
 async function fetchRecommendationsSafe(videoId) {
+  const cacheKey = String(videoId || "").trim();
+  if (cacheKey) {
+    const cached = getCachedValue(runtimeCache.recommendations, cacheKey, RECOMMENDATION_CACHE_TTL);
+    if (cached) return cached.map((item) => ({ ...item }));
+  }
   try {
-    return await fetchRecommendations(videoId);
+    const result = await fetchRecommendations(videoId);
+    if (cacheKey && result.length) {
+      setCachedValue(runtimeCache.recommendations, cacheKey, result);
+    }
+    return result;
   } catch (_) {
     return [];
   }
@@ -892,13 +945,21 @@ async function loadDiscovery() {
   if (!refs.discoverSection) return;
 
   const requestId = ++state.discoverRequestId;
+  const cacheKey = `${state.mode}|${state.source}|${state.selectedMood}`;
+  const cached = getCachedValue(runtimeCache.discovery, cacheKey, DISCOVERY_CACHE_TTL);
+
+  if (cached?.length) {
+    renderDiscovery(rotateItems(cached, requestId));
+  }
 
   if (state.source === "local") {
-    const local = state.library[state.mode].local;
-    const localSlice = local.slice(0, 24);
-    state.discoverCache[state.mode].local = localSlice;
+    const local = state.library[state.mode].local.slice(0, 24);
+    const fallback = getFallbackCatalogForMood(state.selectedMood);
+    const combined = uniqueItems([...local, ...fallback]).slice(0, 24);
+    state.discoverCache[state.mode].local = combined;
+    setCachedValue(runtimeCache.discovery, cacheKey, combined);
     if (requestId !== state.discoverRequestId) return;
-    renderDiscovery(localSlice);
+    renderDiscovery(rotateItems(combined, requestId));
     return;
   }
 
@@ -906,20 +967,27 @@ async function loadDiscovery() {
   try {
     const results = await fetchYouTubeResults(query);
     if (requestId !== state.discoverRequestId) return;
-    const sliced = results.slice(0, 30);
-    if (sliced.length) {
-      state.discoverCache[state.mode].online = sliced;
-      renderDiscovery(sliced);
-      return;
-    }
-    renderDiscovery(state.discoverCache[state.mode].online.length ? state.discoverCache[state.mode].online : getFallbackCatalogForMood(state.selectedMood));
+    const fallback = getFallbackCatalogForMood(state.selectedMood);
+    const seeded = state.current?.kind === "youtube"
+      ? await fetchRecommendationsSafe(state.current.youtubeId).catch(() => [])
+      : [];
+    const combined = uniqueItems([...results, ...seeded, ...fallback]).slice(0, 30);
+    const rotated = rotateItems(combined, requestId);
+    state.discoverCache[state.mode].online = rotated;
+    setCachedValue(runtimeCache.discovery, cacheKey, rotated);
+    renderDiscovery(rotated);
+    return;
   } catch (error) {
     if (requestId !== state.discoverRequestId) return;
+    const fallback = getFallbackCatalogForMood(state.selectedMood);
+    const combined = uniqueItems([...(state.discoverCache[state.mode].online || []), ...fallback]).slice(0, 24);
     if (String(error?.status || error?.code || "") === "429" || /quota/i.test(String(error?.message || ""))) {
-      renderDiscovery(getFallbackCatalogForMood(state.selectedMood));
+      setCachedValue(runtimeCache.discovery, cacheKey, combined);
+      renderDiscovery(rotateItems(combined, requestId));
       return;
     }
-    renderDiscovery(state.discoverCache[state.mode].online.length ? state.discoverCache[state.mode].online : getFallbackCatalogForMood(state.selectedMood));
+    setCachedValue(runtimeCache.discovery, cacheKey, combined);
+    renderDiscovery(rotateItems(combined, requestId));
   }
 }
 
@@ -1015,7 +1083,7 @@ async function startSmartPlayback(item, sourceItems = null) {
       const fresh = rec.filter((r) => !existing.has(r.id));
       if (onlineYoutube) {
         const qState = onlineQueueState();
-        qState.related.splice(1, 0, ...fresh.slice(0, 20));
+        qState.related.splice(1, 0, ...fresh.slice(0, 24));
         state.queue[state.mode][state.source] = qState.related;
       } else {
         fresh.forEach((r) => nowQueue().push(r));
@@ -1486,10 +1554,19 @@ async function searchOnline() {
 }
 
 async function fetchYouTubeResults(query) {
+  const cacheKey = `${state.mode}|${normalizeText(query).toLowerCase()}`;
+  const cached = getCachedValue(runtimeCache.search, cacheKey, SEARCH_CACHE_TTL);
+  if (cached?.length) {
+    return cached.map((item) => ({ ...item }));
+  }
+
   if (state.youtubeApiKey) {
     try {
       const byApiKey = await fetchYouTubeResultsViaApiKey(query, state.youtubeApiKey);
-      if (byApiKey.length) return byApiKey;
+      if (byApiKey.length) {
+        setCachedValue(runtimeCache.search, cacheKey, byApiKey);
+        return byApiKey;
+      }
     } catch (_) {
       // If YouTube Data API quota is exhausted, continue with non-key fallbacks.
     }
@@ -1498,6 +1575,7 @@ async function fetchYouTubeResults(query) {
   try {
     const allOriginsResults = await fetchYouTubeResultsViaAllOrigins(query);
     if (allOriginsResults.length) {
+      setCachedValue(runtimeCache.search, cacheKey, allOriginsResults);
       return allOriginsResults;
     }
   } catch (_) {
@@ -1507,6 +1585,7 @@ async function fetchYouTubeResults(query) {
   try {
     const duckDuckGoResults = await fetchYouTubeResultsViaDuckDuckGo(query);
     if (duckDuckGoResults.length) {
+      setCachedValue(runtimeCache.search, cacheKey, duckDuckGoResults);
       return duckDuckGoResults;
     }
   } catch (_) {
@@ -1522,6 +1601,7 @@ async function fetchYouTubeResults(query) {
       if (proxyRes.ok) {
         const proxyData = await proxyRes.json();
         if (Array.isArray(proxyData) && proxyData.length) {
+          setCachedValue(runtimeCache.search, cacheKey, proxyData);
           return proxyData;
         }
       }
@@ -1549,8 +1629,11 @@ async function fetchYouTubeResults(query) {
         }));
 
       if (state.mode === "music") {
-        return cleaned.filter((x) => !/shorts/i.test(x.title)).slice(0, 20);
+        const filtered = cleaned.filter((x) => !/shorts/i.test(x.title)).slice(0, 24);
+        if (filtered.length) setCachedValue(runtimeCache.search, cacheKey, filtered);
+        return filtered;
       }
+      if (cleaned.length) setCachedValue(runtimeCache.search, cacheKey, cleaned);
       return cleaned;
     } catch (error) {
       continue;
@@ -2172,6 +2255,20 @@ function bootstrap() {
   loadDiscovery();
   setMediaActionHandlers();
   tick();
+
+  if (!window.__duoDiscoveryRefreshTimer) {
+    window.__duoDiscoveryRefreshTimer = window.setInterval(() => {
+      if (!refs.discoverSection || refs.discoverSection.hidden) return;
+      loadDiscovery();
+    }, 240000);
+  }
+
+  if (!window.__duoQueueGrowthTimer) {
+    window.__duoQueueGrowthTimer = window.setInterval(() => {
+      if (state.source !== "online" || state.current?.kind !== "youtube" || !state.isPlaying) return;
+      ensureOnlineQueueGrowth(8).catch(() => null);
+    }, 15000);
+  }
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js?v=24", { updateViaCache: "none" }).catch(() => null);
