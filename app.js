@@ -160,6 +160,15 @@ function rotateItems(items, offset) {
   return items.slice(index).concat(items.slice(0, index));
 }
 
+function markAsRadioAdded(item) {
+  if (!item) return item;
+  return {
+    ...item,
+    addedByRadio: true,
+    addedByRadioAt: Date.now()
+  };
+}
+
 const refs = {
   modeMusic: document.getElementById("modeMusic"),
   modeVideo: document.getElementById("modeVideo"),
@@ -370,7 +379,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       for (const item of ranked) {
         if (appended >= targetAppend) break;
         if (existing.has(item.id) || played.has(item.id)) continue;
-        related.push(item);
+        related.push(markAsRadioAdded(item));
         existing.add(item.id);
         appended += 1;
       }
@@ -386,13 +395,15 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
         .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
         .slice(0, Math.max(8, minAhead));
       fallback.forEach((item) => {
-        related.push(item);
+        related.push(markAsRadioAdded(item));
         existing.add(item.id);
         appended += 1;
       });
     }
 
     if (!appended) return;
+
+    updateOnlineHint(`Radio agrego +${appended} relacionadas.`);
 
     state.queue[state.mode][state.source] = related;
     renderQueue();
@@ -709,11 +720,15 @@ function renderLibrary(items = null) {
     const thumb = item.thumbnail
       ? `<img class="thumb" src="${escapeHtml(item.thumbnail)}" alt="portada" loading="lazy" />`
       : `<div class="thumb placeholder">${state.mode === "music" ? "MUS" : "VID"}</div>`;
+    const radioTag = item.addedByRadio ? `<span class="radio-added-tag">Radio la agrego</span>` : "";
     li.innerHTML = `
       <div class="track-head">
         ${thumb}
         <div>
-          <div class="title">${escapeHtml(item.title)}</div>
+          <div class="title-row">
+            <div class="title">${escapeHtml(item.title)}</div>
+            ${radioTag}
+          </div>
           <div class="sub">${escapeHtml(item.subtitle || "")}</div>
         </div>
       </div>
@@ -1159,8 +1174,11 @@ async function startSmartPlayback(item, sourceItems = null) {
       const fresh = rec.filter((r) => !existing.has(r.id));
       if (onlineYoutube) {
         const qState = onlineQueueState();
-        qState.related.splice(1, 0, ...fresh.slice(0, 24));
+        qState.related.splice(1, 0, ...fresh.slice(0, 24).map(markAsRadioAdded));
         state.queue[state.mode][state.source] = qState.related;
+        if (fresh.length) {
+          updateOnlineHint(`Radio agrego +${Math.min(24, fresh.length)} relacionadas.`);
+        }
       } else {
         fresh.forEach((r) => nowQueue().push(r));
       }
@@ -1605,7 +1623,8 @@ async function handleQueueEnd() {
       const played = new Set(qState?.playedIds || []);
       const existing = new Set(nowQueue().map((x) => x.id));
       const picked = rec.find((x) => x?.id && !existing.has(x.id) && !played.has(x.id)) || rec[0];
-      nowQueue().push(picked);
+      nowQueue().push(markAsRadioAdded(picked));
+      updateOnlineHint("Radio agrego +1 relacionada.");
       renderQueue();
       playItem(picked, nowQueue().length - 1);
       return;

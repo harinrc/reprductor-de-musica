@@ -336,6 +336,23 @@ body {
   line-height: 1.24;
 }
 
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.radio-added-tag {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(var(--aura-rgb), 0.12);
+  white-space: nowrap;
+}
+
 .track-item .sub {
   color: var(--ink-soft);
   font-size: 0.88rem;
