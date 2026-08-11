@@ -520,6 +520,15 @@ input[type="password"] {
   gap: 8px;
 }
 
+.radio-growing-hint {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(var(--aura-rgb), 0.1);
+}
+
 .in-player-queue .track-list {
   flex: 1;
   min-height: 180px;

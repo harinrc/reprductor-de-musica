@@ -205,6 +205,7 @@ const refs = {
   queueModeTabs: document.getElementById("queueModeTabs"),
   queueModeRelated: document.getElementById("queueModeRelated"),
   queueModeResults: document.getElementById("queueModeResults"),
+  radioGrowingHint: document.getElementById("radioGrowingHint"),
   closeResultsBtn: document.getElementById("closeResultsBtn"),
   shuffleControlBtn: document.getElementById("shuffleControlBtn"),
   prevBtn: document.getElementById("prevBtn"),
@@ -266,10 +267,20 @@ function updateQueueViewUi() {
   if (!refs.queueModeTabs || !refs.queueModeRelated || !refs.queueModeResults) return;
   const show = isOnlineQueueMode();
   refs.queueModeTabs.hidden = !show;
-  if (!show) return;
+  if (!show) {
+    if (refs.radioGrowingHint) refs.radioGrowingHint.hidden = true;
+    return;
+  }
   const view = getActiveQueueView();
   refs.queueModeRelated.classList.toggle("is-active", view === "related");
   refs.queueModeResults.classList.toggle("is-active", view === "results");
+  updateRadioGrowingIndicator();
+}
+
+function updateRadioGrowingIndicator() {
+  if (!refs.radioGrowingHint) return;
+  const show = isOnlineQueueMode() && Boolean(onlineQueueState().loading);
+  refs.radioGrowingHint.hidden = !show;
 }
 
 function queueItemsForRender() {
@@ -333,6 +344,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5) {
   const targetAppend = Math.max(6, minAhead * 2);
 
   qState.loading = true;
+  updateRadioGrowingIndicator();
   try {
     for (const seed of seedCandidates) {
       if (!seed?.youtubeId) continue;
@@ -372,6 +384,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5) {
     renderQueue();
   } finally {
     qState.loading = false;
+    updateRadioGrowingIndicator();
   }
 }
 
@@ -1109,6 +1122,7 @@ async function startSmartPlayback(item, sourceItems = null) {
     const qState = onlineQueueState();
     qState.results = base.length ? [...base] : [item];
     qState.related = buildOnlineQueue(item, qState.results);
+    qState.loading = false;
     qState.playedIds = [item.id];
     qState.seedTrail = [];
     qState.lastSeedId = item.id || "";
