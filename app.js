@@ -127,6 +127,7 @@ const RECOMMENDATION_CACHE_TTL = 20 * 60 * 1000;
 const DISCOVERY_CACHE_TTL = 4 * 60 * 1000;
 
 const appConfig = window.DUO_CONFIG || {};
+let deferredInstallPrompt = null;
 
 function hasLocalApi() {
   return location.protocol === "http:" || location.protocol === "https:";
@@ -252,6 +253,8 @@ const refs = {
   moodChips: document.getElementById("moodChips"),
   resultsSection: document.getElementById("resultsSection"),
   localPicker: document.getElementById("localPicker"),
+  localFolderPicker: document.getElementById("localFolderPicker"),
+  installAppBtn: document.getElementById("installAppBtn"),
   nowPlayingSection: document.getElementById("nowPlayingSection"),
   libraryList: document.getElementById("libraryList"),
   queueList: document.getElementById("queueList"),
@@ -853,6 +856,9 @@ function setMode(mode) {
   state.mode = mode;
   refs.modeMusic.classList.toggle("is-active", mode === "music");
   refs.modeVideo.classList.toggle("is-active", mode === "video");
+  if (state.source === "local") {
+    state.queue[state.mode].local = [...state.library[state.mode].local];
+  }
   updateMediaSurface();
   loadDiscovery();
   renderAll();
@@ -869,6 +875,12 @@ function setSource(source) {
     refs.onlineApiRow.style.display = showConfigRow ? "flex" : "none";
   }
   refs.localSearchRow.hidden = source !== "local";
+
+  if (source === "local") {
+    state.queue[state.mode].local = [...state.library[state.mode].local];
+    setResultsVisible(state.library[state.mode].local.length > 0);
+  }
+
   updateOnlineHintByContext();
   updateMediaSurface();
   loadDiscovery();
@@ -2239,24 +2251,124 @@ async function fetchRecommendationsViaApiKey(videoId, apiKey) {
     .filter(Boolean);
 }
 
-function loadLocalFiles(fileList) {
+function readAudioTags(file) {
+  if (!window.jsmediatags?.read) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      window.jsmediatags.read(file, {
+        onSuccess: (result) => resolve(result?.tags || null),
+        onError: () => resolve(null)
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+function pictureToObjectUrl(picture) {
+  try {
+    if (!picture?.data || !picture?.format) return "";
+    const bytes = new Uint8Array(picture.data);
+    const blob = new Blob([bytes], { type: picture.format });
+    return URL.createObjectURL(blob);
+  } catch (_) {
+    return "";
+  }
+}
+
+function readLocalDuration(file, isVideo) {
+  return new Promise((resolve) => {
+    const el = document.createElement(isVideo ? "video" : "audio");
+    const objectUrl = URL.createObjectURL(file);
+    let done = false;
+
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      try {
+        el.pause();
+        el.removeAttribute("src");
+        el.load();
+      } catch (_) {
+        // Ignore cleanup failures.
+      }
+      URL.revokeObjectURL(objectUrl);
+      resolve(value);
+    };
+
+    el.preload = "metadata";
+    el.onloadedmetadata = () => {
+      const dur = Number(el.duration);
+      finish(Number.isFinite(dur) && dur > 0 ? dur : 0);
+    };
+    el.onerror = () => finish(0);
+    el.src = objectUrl;
+  });
+}
+
+async function buildLocalItem(file) {
+  const isVideo = state.mode === "video";
+  const baseTitle = file.name.replace(/\.[^.]+$/, "");
+  const durationSec = await readLocalDuration(file, isVideo);
+  const durationLabel = durationSec > 0 ? formatTime(durationSec) : "00:00";
+  const url = URL.createObjectURL(file);
+  const relativePath = normalizeText(file.webkitRelativePath || "");
+
+  let title = baseTitle;
+  let artist = "Local";
+  let album = "";
+  let thumbnail = "";
+
+  if (!isVideo) {
+    const tags = await readAudioTags(file);
+    if (tags) {
+      title = normalizeText(tags.title || baseTitle) || baseTitle;
+      artist = normalizeText(tags.artist || tags.albumartist || artist) || artist;
+      album = normalizeText(tags.album || "");
+      thumbnail = pictureToObjectUrl(tags.picture);
+    }
+  }
+
+  const subtitleParts = [`${artist} - ${durationLabel}`];
+  if (album) subtitleParts.push(album);
+  if (relativePath) subtitleParts.push(relativePath);
+
+  return {
+    id: `local-${file.name}-${file.size}-${file.lastModified}`,
+    title,
+    subtitle: subtitleParts.join(" | "),
+    thumbnail,
+    url,
+    kind: "local"
+  };
+}
+
+async function loadLocalFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
 
   const kindAccept = state.mode === "music" ? "audio/" : "video/";
-  const mapped = files
-    .filter((f) => f.type.startsWith(kindAccept))
-    .map((f) => ({
-      id: `local-${f.name}-${f.size}-${f.lastModified}`,
-      title: f.name.replace(/\.[^.]+$/, ""),
-      subtitle: `${(f.size / (1024 * 1024)).toFixed(1)} MB`,
-      url: URL.createObjectURL(f),
-      kind: "local"
-    }));
+  const accepted = files.filter((f) => f.type.startsWith(kindAccept));
+  if (!accepted.length) {
+    updateOnlineHint("No se encontraron archivos compatibles en esta seleccion.");
+    return;
+  }
 
-  state.library[state.mode].local = mapped;
+  updateOnlineHint(`Cargando ${accepted.length} archivos locales...`);
+  const built = await Promise.all(accepted.map((f) => buildLocalItem(f)));
+
+  const merged = new Map((state.library[state.mode].local || []).map((x) => [x.id, x]));
+  built.forEach((item) => merged.set(item.id, item));
+
+  state.library[state.mode].local = Array.from(merged.values())
+    .sort((a, b) => a.title.localeCompare(b.title, "es", { sensitivity: "base" }));
+
+  state.queue[state.mode].local = [...state.library[state.mode].local];
+
   setResultsVisible(true);
   renderLibrary();
+  renderQueue();
+  updateOnlineHint(`Biblioteca local: ${state.library[state.mode].local.length} pistas cargadas.`);
 }
 
 function filterLocal() {
@@ -2365,8 +2477,31 @@ function bindEvents() {
     });
   }
 
-  refs.localPicker.addEventListener("change", (e) => loadLocalFiles(e.target.files));
+  refs.localPicker.addEventListener("change", async (e) => {
+    await loadLocalFiles(e.target.files);
+    e.target.value = "";
+  });
+  if (refs.localFolderPicker) {
+    refs.localFolderPicker.addEventListener("change", async (e) => {
+      await loadLocalFiles(e.target.files);
+      e.target.value = "";
+    });
+  }
   refs.localQuery.addEventListener("input", filterLocal);
+
+  if (refs.installAppBtn) {
+    refs.installAppBtn.addEventListener("click", async () => {
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      try {
+        await deferredInstallPrompt.userChoice;
+      } catch (_) {
+        // Ignore prompt result errors.
+      }
+      deferredInstallPrompt = null;
+      refs.installAppBtn.hidden = true;
+    });
+  }
 
   refs.libraryList.addEventListener("click", (e) => {
     const btn = e.target.closest("button");
@@ -2644,6 +2779,18 @@ function bootstrap() {
   }
 
   bindEvents();
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    if (refs.installAppBtn) refs.installAppBtn.hidden = false;
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    if (refs.installAppBtn) refs.installAppBtn.hidden = true;
+  });
+
   initAudioVisualizer();
   enablePlayerWindowInteraction();
   renderMoodChips();
@@ -2677,7 +2824,7 @@ function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=27", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=28", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

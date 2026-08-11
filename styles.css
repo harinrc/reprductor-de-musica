@@ -233,6 +233,20 @@ body {
   color: var(--ink-soft);
 }
 
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .mode-switch,
 .search-row,
 .controls,
