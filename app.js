@@ -4020,7 +4020,7 @@ async function bootstrap() {
 
   if (!window.__duoQueueGrowthTimer) {
     window.__duoQueueGrowthTimer = window.setInterval(() => {
-      if (state.source !== "online" || state.current?.kind !== "youtube" || !state.isPlaying) return;
+      if (state.source !== "online" || !isRadioPlayable(state.current) || !state.isPlaying) return;
       ensureOnlineQueueGrowth(20, 56).catch(() => null);
     }, 15000);
   }
