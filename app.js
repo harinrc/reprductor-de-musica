@@ -16,6 +16,7 @@ const state = {
   shuffle: false,
   repeatMode: "off",
   autoplay: true,
+  preferFreeInBackground: true,
   current: null,
   ytReady: false,
   ytPlayer: null,
@@ -329,6 +330,7 @@ const refs = {
   speedSelect: document.getElementById("speedSelect"),
   repeatBtn: document.getElementById("repeatBtn"),
   autoplayBtn: document.getElementById("autoplayBtn"),
+  bgFreeBtn: document.getElementById("bgFreeBtn"),
   shareBtn: document.getElementById("shareBtn")
 };
 
@@ -1831,6 +1833,7 @@ function playItem(item, queuePosition = null) {
   if (state.source === "online" && isRadioPlayable(item)) {
     reseedRadioFromCurrent(6).catch(() => null);
     ensureOnlineQueueGrowth(16, 48).catch(() => null);
+    ensureBackgroundStreamsAhead().catch(() => null);
   }
 }
 
@@ -2080,6 +2083,46 @@ function stopSilentKeepAlive() {
   if (silentKeepAlive) silentKeepAlive.pause();
 }
 
+// Deja siempre alguna pista de catalogo libre cerca para poder seguir en segundo plano.
+async function ensureBackgroundStreamsAhead(minStreams = 2) {
+  if (!state.preferFreeInBackground || !freeCatalogsEnabled()) return;
+  if (!isOnlineQueueMode()) return;
+
+  const qState = onlineQueueState();
+  const related = qState.related;
+  if (!Array.isArray(related) || !related.length) return;
+
+  const from = Math.max(0, nowIndex());
+  const ahead = related.slice(from + 1);
+  if (ahead.filter((x) => x.kind === "stream").length >= minStreams) return;
+
+  const artist = artistHint(state.current || {});
+  const genre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "pop";
+  const fresh = await fetchFreeCatalogResults(artist ? `${artist} ${genre}` : genre, 10).catch(() => []);
+  if (!fresh.length) return;
+
+  const existing = new Set(related.map((x) => x.id));
+  const signatures = new Set((qState.playedSignatures || []).filter(Boolean));
+  related.forEach((x) => {
+    const sig = trackSignature(x);
+    if (sig) signatures.add(sig);
+  });
+
+  const picked = pickDiverseTracks(fresh, {
+    max: minStreams,
+    blockedIds: existing,
+    blockedSignatures: signatures,
+    artistCounts: artistCountsOf(related),
+    maxPerArtist: RADIO_MAX_PER_ARTIST
+  }).map(markAsRadioAdded);
+
+  if (!picked.length) return;
+
+  related.splice(Math.min(from + 2, related.length), 0, ...picked);
+  state.queue[state.mode][state.source] = related;
+  renderQueue();
+}
+
 function resumeYouTubeSoon() {
   if (!state.ytReady || !state.ytPlayer) return;
   [150, 700, 1800].forEach((delay) => {
@@ -2093,6 +2136,38 @@ function resumeYouTubeSoon() {
       }
     }, delay);
   });
+  setTimeout(handleBlockedBackgroundPlayback, 2600);
+}
+
+// YouTube prohibe el segundo plano en su reproductor incrustado: si no logro
+// reanudarlo, sigo con una pista de catalogo libre o dejo el estado en pausa real.
+function handleBlockedBackgroundPlayback() {
+  if (!document.hidden || state.userPaused) return;
+  if (state.current?.kind !== "youtube" || !state.isPlaying) return;
+
+  let playing = false;
+  try {
+    playing = state.ytPlayer?.getPlayerState() === 1;
+  } catch (_) {
+    playing = false;
+  }
+  if (playing) return;
+
+  if (state.preferFreeInBackground) {
+    const queue = nowQueue();
+    const from = Math.max(0, nowIndex());
+    const nextFree = queue.findIndex((x, i) => i > from && x.kind === "stream" && !isAlreadyPlayed(x));
+    if (nextFree >= 0) {
+      updateOnlineHint("YouTube no permite segundo plano; sigo con el catalogo libre.");
+      playItem(queue[nextFree], nextFree);
+      return;
+    }
+  }
+
+  state.isPlaying = false;
+  stopSilentKeepAlive();
+  updateMediaSession();
+  updatePrimaryPlayButton();
 }
 
 function togglePlay() {
@@ -3306,6 +3381,15 @@ function bindEvents() {
     refs.autoplayBtn.textContent = state.autoplay ? "Autoplay on" : "Autoplay off";
   });
 
+  if (refs.bgFreeBtn) {
+    refs.bgFreeBtn.addEventListener("click", () => {
+      state.preferFreeInBackground = !state.preferFreeInBackground;
+      saveBackgroundPreference(state.preferFreeInBackground);
+      updateBackgroundPreferenceUi();
+      if (state.preferFreeInBackground) ensureBackgroundStreamsAhead().catch(() => null);
+    });
+  }
+
   if (refs.shareBtn) {
     refs.shareBtn.addEventListener("click", () => {
       shareCurrentTrack();
@@ -3335,6 +3419,29 @@ function bindEvents() {
     startSilentKeepAlive();
     resumeYouTubeSoon();
   });
+}
+
+function saveBackgroundPreference(value) {
+  try {
+    localStorage.setItem("duo.preferFreeInBackground", value ? "1" : "0");
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
+function loadBackgroundPreference() {
+  try {
+    return localStorage.getItem("duo.preferFreeInBackground") !== "0";
+  } catch (_) {
+    return true;
+  }
+}
+
+function updateBackgroundPreferenceUi() {
+  if (!refs.bgFreeBtn) return;
+  refs.bgFreeBtn.classList.toggle("is-active", state.preferFreeInBackground);
+  refs.bgFreeBtn.setAttribute("aria-pressed", String(state.preferFreeInBackground));
+  refs.bgFreeBtn.textContent = state.preferFreeInBackground ? "Fondo libre on" : "Fondo libre off";
 }
 
 function escapeHtml(str) {
@@ -3611,6 +3718,8 @@ async function bootstrap() {
   updateShuffleUi();
   updateRepeatUi();
   updateQueueViewUi();
+  state.preferFreeInBackground = loadBackgroundPreference();
+  updateBackgroundPreferenceUi();
   if (refs.miniPlayer) refs.miniPlayer.hidden = false;
   setMode("music");
   setSource("online");
@@ -3637,7 +3746,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=32", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=33", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
