@@ -212,19 +212,52 @@ function markAsRadioAdded(item) {
   };
 }
 
-// Firma independiente del canal y del orden de palabras: distintos uploads de la misma
-// cancion (official / audio / lyrics / live) colapsan en la misma clave.
-function trackSignature(item) {
+// Tokens ordenados y sin repetir del titulo: distintos uploads de la misma cancion
+// (official / audio / lyrics / live / con o sin feat) producen conjuntos casi iguales.
+function trackTokens(item) {
   const raw = normalizeText(item?.title || "").toLowerCase();
-  if (!raw) return "";
+  if (!raw) return [];
   const stripped = raw
     .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
     .replace(/official|oficial|video|videoclip|lyrics|lyric|letra|audio|hd|4k|hq|remaster(?:ed)?|version|live|mix|playlist|visualizer|feat\.?|ft\.?|mv/gi, " ")
     .replace(/[^a-z0-9\s]/g, " ");
 
-  const parts = Array.from(new Set(stripped.split(/\s+/).filter((x) => x && x.length > 2)));
-  if (!parts.length) return "";
-  return parts.sort().slice(0, 6).join(" ");
+  return Array.from(new Set(stripped.split(/\s+/).filter((x) => x && x.length > 2))).sort();
+}
+
+function trackSignature(item) {
+  return trackTokens(item).join(" ");
+}
+
+function tokensAreNearDuplicate(a, b) {
+  if (!a.length || !b.length) return false;
+  const setB = new Set(b);
+  let overlap = 0;
+  a.forEach((token) => {
+    if (setB.has(token)) overlap += 1;
+  });
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 2) return overlap === minLen;
+  return overlap / minLen >= 0.7;
+}
+
+function createDuplicateGuard(signatures = []) {
+  const known = [];
+  (signatures instanceof Set ? Array.from(signatures) : signatures || []).forEach((sig) => {
+    if (sig) known.push(String(sig).split(" ").filter(Boolean));
+  });
+
+  return {
+    has(item) {
+      const tokens = trackTokens(item);
+      if (!tokens.length) return false;
+      return known.some((other) => tokensAreNearDuplicate(tokens, other));
+    },
+    add(item) {
+      const tokens = trackTokens(item);
+      if (tokens.length) known.push(tokens);
+    }
+  };
 }
 
 function artistCountsOf(items) {
@@ -252,16 +285,15 @@ function artistIsSaturated(counts, item, max = RADIO_MAX_PER_ARTIST) {
 function pickDiverseTracks(items, { max = 24, blockedSignatures = new Set(), blockedIds = new Set(), artistCounts = null, maxPerArtist = 0 } = {}) {
   const picked = [];
   const seenIds = new Set(blockedIds);
-  const seenSig = new Set(blockedSignatures);
+  const guard = createDuplicateGuard(blockedSignatures);
   const counts = artistCounts ? new Map(artistCounts) : new Map();
   for (const item of items || []) {
     if (!item?.id || seenIds.has(item.id)) continue;
-    const sig = trackSignature(item);
-    if (sig && seenSig.has(sig)) continue;
+    if (guard.has(item)) continue;
     if (maxPerArtist > 0 && artistIsSaturated(counts, item, maxPerArtist)) continue;
     picked.push(item);
     seenIds.add(item.id);
-    if (sig) seenSig.add(sig);
+    guard.add(item);
     bumpArtistCount(counts, item);
     if (picked.length >= max) break;
   }
@@ -512,6 +544,7 @@ function buildRadioRelatedQueries(qState) {
 async function injectRadioFromQueryVariations(qState, related, existing, played, minAhead, existingSignatures = new Set()) {
   const queries = buildRadioRelatedQueries(qState);
   const artistCounts = artistCountsOf(related);
+  const guard = createDuplicateGuard(existingSignatures);
   let appended = 0;
   for (const query of queries) {
     const candidates = await fetchMixedResults(query).catch(() => []);
@@ -524,11 +557,12 @@ async function injectRadioFromQueryVariations(qState, related, existing, played,
     });
     for (const item of diverse) {
       if (!item?.id || existing.has(item.id) || played.has(item.id)) continue;
-      const sig = trackSignature(item);
-      if (sig && existingSignatures.has(sig)) continue;
+      if (guard.has(item)) continue;
       related.push(markAsRadioAdded(item));
       existing.add(item.id);
+      guard.add(item);
       bumpArtistCount(artistCounts, item);
+      const sig = trackSignature(item);
       if (sig) existingSignatures.add(sig);
       appended += 1;
       if (appended >= Math.max(10, minAhead)) break;
@@ -621,6 +655,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
     if (sig) existingSignatures.add(sig);
   });
   const artistCounts = artistCountsOf(related);
+  const guard = createDuplicateGuard(existingSignatures);
   let appended = 0;
   const targetAppend = Math.max(6, minAhead * 2);
 
@@ -659,12 +694,13 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       for (const item of ranked) {
         if (appended >= targetAppend) break;
         if (existing.has(item.id) || played.has(item.id)) continue;
-        const sig = trackSignature(item);
-        if (sig && existingSignatures.has(sig)) continue;
+        if (guard.has(item)) continue;
         if (artistIsSaturated(artistCounts, item)) continue;
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        guard.add(item);
         bumpArtistCount(artistCounts, item);
+        const sig = trackSignature(item);
         if (sig) existingSignatures.add(sig);
         appended += 1;
       }
@@ -1919,7 +1955,7 @@ function playLocal(item) {
   if (!item.url) return;
 
   stopSilentKeepAlive();
-  stopStreamPlayer();
+  stopAllPlayers();
   connectLocalAudioAnalyser();
 
   refs.htmlPlayer.pause();
@@ -1966,6 +2002,7 @@ function ensureStreamPlayer() {
   });
   audio.addEventListener("error", () => {
     if (state.current?.kind !== "stream") return;
+    if (!audio.getAttribute("src")) return;
     updateOnlineHint("No se pudo reproducir esta pista del catalogo libre. Saltando.");
     if (state.autoplay) nextTrack();
   });
@@ -1977,6 +2014,22 @@ function stopStreamPlayer() {
   if (streamPlayer) streamPlayer.pause();
 }
 
+function stopAllPlayers({ keepYouTube = false, keepStream = false } = {}) {
+  if (!keepStream && streamPlayer) {
+    streamPlayer.pause();
+    streamPlayer.removeAttribute("src");
+    streamPlayer.load();
+  }
+  refs.htmlPlayer.pause();
+  if (!keepYouTube && state.ytReady && state.ytPlayer) {
+    try {
+      state.ytPlayer.pauseVideo();
+    } catch (_) {
+      // Ignore player errors while it reloads.
+    }
+  }
+}
+
 function playStream(item) {
   if (!item?.url) {
     updateOnlineHint("Esta pista no tiene un stream valido.");
@@ -1986,12 +2039,10 @@ function playStream(item) {
   }
 
   stopSilentKeepAlive();
-  refs.htmlPlayer.pause();
-  if (state.ytReady && state.ytPlayer) {
-    try { state.ytPlayer.pauseVideo(); } catch (_) {}
-  }
+  stopAllPlayers({ keepStream: true });
 
   const audio = ensureStreamPlayer();
+  audio.pause();
   audio.src = item.url;
   audio.playbackRate = Number(refs.speedSelect.value);
   audio.volume = Number(refs.volumeBar.value);
@@ -2014,6 +2065,8 @@ function playYouTube(item) {
     return;
   }
 
+  stopAllPlayers({ keepYouTube: true });
+
   if (!state.ytPlayer || !state.ytReady) {
     state.pendingYouTubeItem = item;
     updateOnlineHint("Cargando reproductor de YouTube...");
@@ -2021,7 +2074,6 @@ function playYouTube(item) {
   }
 
   state.pendingYouTubeItem = null;
-  refs.htmlPlayer.pause();
 
   state.ytPlayer.loadVideoById(item.youtubeId);
   state.ytPlayer.playVideo();
@@ -2247,8 +2299,7 @@ function isAlreadyPlayed(item) {
   const qState = onlineQueueState();
   if ((qState.playedIds || []).includes(item.id)) return true;
   if ((qState.blockedIds || []).includes(item.id)) return true;
-  const sig = trackSignature(item);
-  return Boolean(sig && (qState.playedSignatures || []).includes(sig));
+  return createDuplicateGuard(qState.playedSignatures || []).has(item);
 }
 
 function nextTrack() {
@@ -2332,10 +2383,10 @@ async function handleQueueEnd() {
         const sig = trackSignature(x);
         if (sig) playedSignatures.add(sig);
       });
+      const guard = createDuplicateGuard(playedSignatures);
       const picked = rec.find((x) => {
         if (!x?.id || existing.has(x.id) || played.has(x.id)) return false;
-        const sig = trackSignature(x);
-        return !sig || !playedSignatures.has(sig);
+        return !guard.has(x);
       });
       if (picked) {
         nowQueue().push(markAsRadioAdded(picked));
@@ -3746,7 +3797,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=33", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=34", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
