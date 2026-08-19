@@ -17,16 +17,14 @@ function cleanTitleForQuery(title) {
     .trim();
 }
 
-function trackSignature(title, author) {
-  const artist = normalizeText(author).toLowerCase();
-  const core = cleanTitleForQuery(title)
+// Firma sin canal y sin orden: reuploads de la misma cancion colapsan en una clave.
+function trackSignature(title) {
+  const parts = cleanTitleForQuery(title)
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((x) => x && x.length > 2)
-    .slice(0, 6)
-    .join(" ");
-  return `${artist}|${core}`;
+    .filter((x) => x && x.length > 2);
+  return Array.from(new Set(parts)).sort().slice(0, 6).join(" ");
 }
 
 const genreLexicon = {
@@ -78,21 +76,26 @@ function mapVideo(v) {
   };
 }
 
-function pickDiverse(videos, { excludeIds = new Set(), excludeSignatures = new Set(), limit = 24 } = {}) {
+function pickDiverse(videos, { excludeIds = new Set(), excludeSignatures = new Set(), limit = 24, maxPerAuthor = 4 } = {}) {
   const out = [];
   const ids = new Set(excludeIds);
   const sigs = new Set(excludeSignatures);
+  const authors = new Map();
 
   for (const v of videos || []) {
     if (!v?.videoId) continue;
     const id = `yt-${v.videoId}`;
     if (ids.has(id)) continue;
 
-    const sig = trackSignature(v.title, v.author?.name || "");
+    const sig = trackSignature(v.title);
     if (sig && sigs.has(sig)) continue;
+
+    const author = normalizeText(v.author?.name || "").toLowerCase();
+    if (author && (authors.get(author) || 0) >= maxPerAuthor) continue;
 
     ids.add(id);
     if (sig) sigs.add(sig);
+    if (author) authors.set(author, (authors.get(author) || 0) + 1);
     out.push(mapVideo(v));
     if (out.length >= limit) break;
   }
@@ -144,7 +147,7 @@ app.get("/api/recommend", async (req, res) => {
     const seedTitle = normalizeText(details?.title || "");
     const seedAuthor = normalizeText(details?.author?.name || "");
     const genre = inferGenre(`${seedHint} ${seedTitle} ${seedAuthor}`, genreHint, moodHint);
-    const seedSignature = trackSignature(seedTitle, seedAuthor);
+    const seedSignature = trackSignature(seedTitle);
     const excludeIds = new Set([`yt-${videoId}`]);
     const excludeSignatures = new Set(seedSignature ? [seedSignature] : []);
 
@@ -154,12 +157,17 @@ app.get("/api/recommend", async (req, res) => {
       buckets.push(details.related_videos);
     }
 
+    // Nunca se busca el titulo exacto: devolveria la misma cancion repetida.
     const searchQueries = [];
-    if (seedAuthor && seedTitle) searchQueries.push(`${seedAuthor} ${genre} songs`);
-    if (seedHint) searchQueries.push(`${seedHint} ${genre} playlist`);
+    if (seedAuthor) {
+      searchQueries.push(`artists similar to ${seedAuthor}`);
+      searchQueries.push(`${seedAuthor} ${genre} songs`);
+    }
     searchQueries.push(`${genre} music mix`);
     searchQueries.push(`${genre} songs playlist`);
-    if (seedAuthor) searchQueries.push(`${seedAuthor} ${genre}`);
+    if (seedHint && seedAuthor && !seedHint.toLowerCase().includes(seedAuthor.toLowerCase())) {
+      searchQueries.push(`${seedHint} ${genre} playlist`);
+    }
 
     for (const q of searchQueries) {
       if (!q.trim()) continue;

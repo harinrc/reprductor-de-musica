@@ -39,8 +39,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0 },
-    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0 }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false }
   }
 };
 
@@ -122,6 +122,7 @@ const runtimeCache = {
   discovery: new Map()
 };
 
+const RADIO_MAX_PER_ARTIST = 4;
 const SEARCH_CACHE_TTL = 10 * 60 * 1000;
 const RECOMMENDATION_CACHE_TTL = 20 * 60 * 1000;
 const DISCOVERY_CACHE_TTL = 4 * 60 * 1000;
@@ -206,34 +207,57 @@ function markAsRadioAdded(item) {
   };
 }
 
+// Firma independiente del canal y del orden de palabras: distintos uploads de la misma
+// cancion (official / audio / lyrics / live) colapsan en la misma clave.
 function trackSignature(item) {
   const raw = normalizeText(item?.title || "").toLowerCase();
   if (!raw) return "";
   const stripped = raw
     .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
-    .replace(/official|video|lyrics|lyric|audio|hd|4k|remaster(?:ed)?|version|live|mix|playlist|feat\.?|ft\.?|mv/gi, " ")
-    .replace(/[^a-z0-9\s-]/g, " ");
+    .replace(/official|oficial|video|videoclip|lyrics|lyric|letra|audio|hd|4k|hq|remaster(?:ed)?|version|live|mix|playlist|visualizer|feat\.?|ft\.?|mv/gi, " ")
+    .replace(/[^a-z0-9\s]/g, " ");
 
-  const parts = stripped
-    .split(/\s+/)
-    .filter((x) => x && x.length > 2);
-
-  const artist = artistHint(item);
-  const core = parts.slice(0, 6).join(" ");
-  return `${artist}|${core}`.trim();
+  const parts = Array.from(new Set(stripped.split(/\s+/).filter((x) => x && x.length > 2)));
+  if (!parts.length) return "";
+  return parts.sort().slice(0, 6).join(" ");
 }
 
-function pickDiverseTracks(items, { max = 24, blockedSignatures = new Set(), blockedIds = new Set() } = {}) {
+function artistCountsOf(items) {
+  const counts = new Map();
+  (items || []).forEach((item) => {
+    const artist = artistHint(item);
+    if (!artist) return;
+    counts.set(artist, (counts.get(artist) || 0) + 1);
+  });
+  return counts;
+}
+
+function bumpArtistCount(counts, item) {
+  const artist = artistHint(item);
+  if (!artist) return;
+  counts.set(artist, (counts.get(artist) || 0) + 1);
+}
+
+function artistIsSaturated(counts, item, max = RADIO_MAX_PER_ARTIST) {
+  const artist = artistHint(item);
+  if (!artist) return false;
+  return (counts.get(artist) || 0) >= max;
+}
+
+function pickDiverseTracks(items, { max = 24, blockedSignatures = new Set(), blockedIds = new Set(), artistCounts = null, maxPerArtist = 0 } = {}) {
   const picked = [];
   const seenIds = new Set(blockedIds);
   const seenSig = new Set(blockedSignatures);
+  const counts = artistCounts ? new Map(artistCounts) : new Map();
   for (const item of items || []) {
     if (!item?.id || seenIds.has(item.id)) continue;
     const sig = trackSignature(item);
     if (sig && seenSig.has(sig)) continue;
+    if (maxPerArtist > 0 && artistIsSaturated(counts, item, maxPerArtist)) continue;
     picked.push(item);
     seenIds.add(item.id);
     if (sig) seenSig.add(sig);
+    bumpArtistCount(counts, item);
     if (picked.length >= max) break;
   }
   return picked;
@@ -402,39 +426,58 @@ function rememberOnlinePlayback(item) {
   }
 }
 
+// Nunca se busca el titulo exacto de la pista actual: eso devuelve la misma cancion
+// una y otra vez. Las consultas giran alrededor del artista y del genero detectado.
 function buildRadioRelatedQueries(qState) {
-  const queryBase = [];
-  const currentTitle = normalizeText(state.current?.title || "");
-  const artist = artistHint(state.current || {});
-  const seed = normalizeText(qState.searchSeed || "");
+  const current = state.current || {};
+  const artist = artistHint(current);
+  const seed = normalizeText(qState.searchSeed || "").toLowerCase();
   const cycle = Number(qState.growthCycle || 0);
-  const modifiers = ["official", "audio", "lyrics", "live", "mix", "remix", "playlist"];
-  const mod = modifiers[cycle % modifiers.length];
-  const seedGenres = Array.from(radioGenreProfile(state.current || {}));
-  const primaryGenre = seedGenres[0] || "pop";
-  const genreQuery = genreLabel[primaryGenre] || primaryGenre;
+  const genres = Array.from(radioGenreProfile(current));
+  const primaryGenre = genreLabel[genres[0]] || genres[0] || "pop";
+  const secondaryGenre = genreLabel[genres[1]] || genres[1] || "";
+  const flavors = ["mix", "playlist", "radio", "best songs", "top tracks", "similar artists"];
+  const flavor = flavors[cycle % flavors.length];
+  const queryBase = [];
 
-  if (seed) queryBase.push(`${seed} ${genreQuery}`);
-  if (currentTitle) queryBase.push(currentTitle);
-  if (artist && currentTitle) queryBase.push(`${artist} ${genreQuery}`);
-  if (seed && artist) queryBase.push(`${seed} ${artist} ${genreQuery}`);
-  if (seed) queryBase.push(`${seed} ${genreQuery} ${mod}`);
-  if (currentTitle) queryBase.push(`${currentTitle} ${genreQuery} ${mod}`);
-  queryBase.push(`${genreQuery} music mix`);
-  queryBase.push(`${genreQuery} songs playlist`);
+  if (artist) {
+    queryBase.push(`artists similar to ${artist}`);
+    queryBase.push(`${artist} ${primaryGenre} ${flavor}`);
+    queryBase.push(`${artist} radio mix`);
+  }
 
-  return uniqueItems(queryBase.map((q) => ({ id: q.toLowerCase(), q }))).map((x) => x.q).slice(0, 6);
+  queryBase.push(`${primaryGenre} ${flavor}`);
+  if (secondaryGenre) queryBase.push(`${secondaryGenre} mix`);
+  if (seed && artist && !seed.includes(artist) && cycle % 3 === 0) {
+    queryBase.push(`${seed} ${primaryGenre} ${flavor}`);
+  }
+  queryBase.push(`${primaryGenre} music mix ${new Date().getFullYear()}`);
+  queryBase.push(`${primaryGenre} songs playlist`);
+
+  const seen = new Set();
+  return queryBase
+    .map((q) => normalizeText(q).trim())
+    .filter((q) => {
+      const key = q.toLowerCase();
+      if (!q || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 6);
 }
 
 async function injectRadioFromQueryVariations(qState, related, existing, played, minAhead, existingSignatures = new Set()) {
   const queries = buildRadioRelatedQueries(qState);
+  const artistCounts = artistCountsOf(related);
   let appended = 0;
   for (const query of queries) {
     const candidates = await fetchYouTubeResults(query).catch(() => []);
     const diverse = pickDiverseTracks(candidates, {
       max: Math.max(10, minAhead),
       blockedSignatures: existingSignatures,
-      blockedIds: existing
+      blockedIds: existing,
+      artistCounts,
+      maxPerArtist: RADIO_MAX_PER_ARTIST
     });
     for (const item of diverse) {
       if (!item?.id || existing.has(item.id) || played.has(item.id)) continue;
@@ -442,6 +485,7 @@ async function injectRadioFromQueryVariations(qState, related, existing, played,
       if (sig && existingSignatures.has(sig)) continue;
       related.push(markAsRadioAdded(item));
       existing.add(item.id);
+      bumpArtistCount(artistCounts, item);
       if (sig) existingSignatures.add(sig);
       appended += 1;
       if (appended >= Math.max(10, minAhead)) break;
@@ -450,6 +494,57 @@ async function injectRadioFromQueryVariations(qState, related, existing, played,
   }
   qState.growthCycle = Number(qState.growthCycle || 0) + 1;
   return appended;
+}
+
+// La cola sigue a la pista en reproduccion, no a la busqueda inicial.
+async function reseedRadioFromCurrent(insertCount = 6) {
+  if (state.source !== "online" || state.current?.kind !== "youtube") return;
+  const qState = onlineQueueState();
+  const currentId = state.current.id;
+  if (!currentId || qState.reseeding || qState.reseedSeedId === currentId) return;
+
+  const related = qState.related;
+  if (!Array.isArray(related) || !related.length) return;
+
+  qState.reseedSeedId = currentId;
+  qState.reseeding = true;
+  try {
+    const rec = await fetchRecommendationsSafe(state.current.youtubeId);
+    if (!rec.length) return;
+
+    const existing = new Set(related.map((x) => x.id));
+    const played = new Set(qState.playedIds || []);
+    const signatures = new Set((qState.playedSignatures || []).filter(Boolean));
+    related.forEach((item) => {
+      const sig = trackSignature(item);
+      if (sig) signatures.add(sig);
+    });
+
+    const fresh = pickDiverseTracks(
+      rec
+        .filter((r) => r?.id && !existing.has(r.id) && !played.has(r.id))
+        .sort((a, b) => onlineSimilarityScore(state.current, b) - onlineSimilarityScore(state.current, a)),
+      {
+        max: insertCount,
+        blockedSignatures: signatures,
+        blockedIds: existing,
+        artistCounts: artistCountsOf(related),
+        maxPerArtist: RADIO_MAX_PER_ARTIST
+      }
+    ).map(markAsRadioAdded);
+
+    if (!fresh.length) return;
+
+    const known = nowIndex();
+    const idx = related[known]?.id === currentId ? known : related.findIndex((x) => x.id === currentId);
+    related.splice(idx >= 0 ? idx + 1 : 0, 0, ...fresh);
+    state.queue[state.mode][state.source] = related;
+    if (idx >= 0) setNowIndex(idx);
+    renderQueue();
+    updateOnlineHint(`Radio: +${fresh.length} relacionadas con lo que suena.`);
+  } finally {
+    qState.reseeding = false;
+  }
 }
 
 async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
@@ -466,12 +561,13 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
 
   if (!Array.isArray(qState.seedTrail)) qState.seedTrail = [];
 
+  // La pista en reproduccion manda: la cola crece a partir de lo que suena ahora.
   const seedCandidates = uniqueItems([
+    state.current,
     related[idx],
     related[idx + 1],
-    state.current,
     related[related.length - 1],
-    ...qState.results.slice(0, 8)
+    ...qState.results.slice(0, 4)
   ]).filter((x) => x?.youtubeId);
 
   const existing = new Set(related.map((x) => x.id));
@@ -481,6 +577,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
     const sig = trackSignature(item);
     if (sig) existingSignatures.add(sig);
   });
+  const artistCounts = artistCountsOf(related);
   let appended = 0;
   const targetAppend = Math.max(6, minAhead * 2);
 
@@ -497,7 +594,9 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       const diverseRec = pickDiverseTracks(rec, {
         max: targetAppend,
         blockedSignatures: existingSignatures,
-        blockedIds: existing
+        blockedIds: existing,
+        artistCounts,
+        maxPerArtist: RADIO_MAX_PER_ARTIST
       });
 
       const ranked = diverseRec
@@ -519,8 +618,10 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
         if (existing.has(item.id) || played.has(item.id)) continue;
         const sig = trackSignature(item);
         if (sig && existingSignatures.has(sig)) continue;
+        if (artistIsSaturated(artistCounts, item)) continue;
         related.push(markAsRadioAdded(item));
         existing.add(item.id);
+        bumpArtistCount(artistCounts, item);
         if (sig) existingSignatures.add(sig);
         appended += 1;
       }
@@ -570,7 +671,8 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
 
     if (!appended && state.current?.title) {
       const hint = artistHint(state.current) || "";
-      const query = hint ? `${state.current.title} ${hint}` : state.current.title;
+      const genre = genreLabel[Array.from(radioGenreProfile(state.current))[0]] || "pop";
+      const query = hint ? `${hint} ${genre} mix` : `${genre} music mix`;
       const more = await fetchYouTubeResults(query).catch(() => []);
       const fallback = pickDiverseTracks(
         more.filter((r) => r?.id && !played.has(r.id)),
@@ -1438,6 +1540,8 @@ async function startSmartPlayback(item, sourceItems = null) {
     }
     qState.growthCycle = 0;
     qState.view = "related";
+    qState.reseedSeedId = item.id || "";
+    qState.reseeding = false;
     state.queue[state.mode][state.source] = qState.related.length ? qState.related : [item];
   } else {
     const queue = buildSmartQueue(item, base);
@@ -1456,10 +1560,22 @@ async function startSmartPlayback(item, sourceItems = null) {
       const fresh = rec.filter((r) => !existing.has(r.id));
       if (onlineYoutube) {
         const qState = onlineQueueState();
-        qState.related.splice(1, 0, ...fresh.slice(0, 24).map(markAsRadioAdded));
-        state.queue[state.mode][state.source] = qState.related;
-        if (fresh.length) {
-          updateOnlineHint(`Radio agrego +${Math.min(24, fresh.length)} relacionadas.`);
+        const signatures = new Set();
+        qState.related.forEach((x) => {
+          const sig = trackSignature(x);
+          if (sig) signatures.add(sig);
+        });
+        const picked = pickDiverseTracks(fresh, {
+          max: 24,
+          blockedSignatures: signatures,
+          blockedIds: existing,
+          artistCounts: artistCountsOf(qState.related),
+          maxPerArtist: RADIO_MAX_PER_ARTIST
+        }).map(markAsRadioAdded);
+        if (picked.length) {
+          qState.related.splice(1, 0, ...picked);
+          state.queue[state.mode][state.source] = qState.related;
+          updateOnlineHint(`Radio agrego +${picked.length} relacionadas.`);
         }
       } else {
         fresh.forEach((r) => nowQueue().push(r));
@@ -1657,6 +1773,7 @@ function playItem(item, queuePosition = null) {
   renderQueue();
 
   if (state.source === "online" && item.kind === "youtube") {
+    reseedRadioFromCurrent(6).catch(() => null);
     ensureOnlineQueueGrowth(16, 48).catch(() => null);
   }
 }
@@ -1842,6 +1959,14 @@ function setSeekPercent(value) {
   }
 }
 
+function isAlreadyPlayed(item) {
+  if (!isOnlineQueueMode() || !item) return false;
+  const qState = onlineQueueState();
+  if ((qState.playedIds || []).includes(item.id)) return true;
+  const sig = trackSignature(item);
+  return Boolean(sig && (qState.playedSignatures || []).includes(sig));
+}
+
 function nextTrack() {
   const queue = nowQueue();
   if (!queue.length) return;
@@ -1853,6 +1978,11 @@ function nextTrack() {
   }
 
   let idx = nowIndex() + 1;
+  // Salta pistas que ya sonaron (o reuploads de la misma cancion) dentro de la cola.
+  while (idx < queue.length && isAlreadyPlayed(queue[idx])) {
+    idx += 1;
+  }
+
   if (idx >= queue.length) {
     if (state.repeatMode === "all") {
       playItem(queue[0], 0);
@@ -1895,7 +2025,10 @@ async function handleQueueEnd() {
   if (isOnlineQueueMode() && state.current.kind === "youtube") {
     const qState = onlineQueueState();
     await ensureOnlineQueueGrowth(20, 56);
-    const nextIdx = nowIndex() + 1;
+    let nextIdx = nowIndex() + 1;
+    while (qState.related[nextIdx] && isAlreadyPlayed(qState.related[nextIdx])) {
+      nextIdx += 1;
+    }
     if (qState.related[nextIdx]) {
       state.queue[state.mode][state.source] = qState.related;
       playItem(qState.related[nextIdx], nextIdx);
@@ -1910,16 +2043,22 @@ async function handleQueueEnd() {
       const played = new Set(qState?.playedIds || []);
       const playedSignatures = new Set(qState?.playedSignatures || []);
       const existing = new Set(nowQueue().map((x) => x.id));
+      nowQueue().forEach((x) => {
+        const sig = trackSignature(x);
+        if (sig) playedSignatures.add(sig);
+      });
       const picked = rec.find((x) => {
         if (!x?.id || existing.has(x.id) || played.has(x.id)) return false;
         const sig = trackSignature(x);
         return !sig || !playedSignatures.has(sig);
-      }) || rec[0];
-      nowQueue().push(markAsRadioAdded(picked));
-      updateOnlineHint("Radio agrego +1 relacionada.");
-      renderQueue();
-      playItem(picked, nowQueue().length - 1);
-      return;
+      });
+      if (picked) {
+        nowQueue().push(markAsRadioAdded(picked));
+        updateOnlineHint("Radio agrego +1 relacionada.");
+        renderQueue();
+        playItem(picked, nowQueue().length - 1);
+        return;
+      }
     }
   } else {
     const library = nowLibrary();
@@ -3053,7 +3192,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=30", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=31", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
