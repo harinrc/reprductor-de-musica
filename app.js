@@ -371,6 +371,7 @@ const refs = {
   repeatBtn: document.getElementById("repeatBtn"),
   autoplayBtn: document.getElementById("autoplayBtn"),
   bgFreeBtn: document.getElementById("bgFreeBtn"),
+  freeSwapBtn: document.getElementById("freeSwapBtn"),
   shareBtn: document.getElementById("shareBtn")
 };
 
@@ -1274,6 +1275,49 @@ function runLibraryQuery(query) {
   refs.onlineQuery.value = query;
   setView("home");
   searchOnline();
+}
+
+// Sustituye la pista de YouTube por una equivalente de los catalogos libres,
+// que se reproducen sin anuncios y sin bloqueo en segundo plano.
+async function switchCurrentToFreeCatalog() {
+  const current = state.current;
+  if (!current || current.kind !== "youtube") {
+    updateOnlineHint("Esta pista ya viene de un catalogo libre.");
+    return;
+  }
+  if (!freeCatalogsEnabled()) {
+    updateOnlineHint("Los catalogos libres estan desactivados o no aplican en modo video.");
+    return;
+  }
+
+  const artist = artistHint(current);
+  const core = trackTokens(current).join(" ");
+  const queries = [
+    normalizeText(current.title),
+    artist ? `${core} ${artist}` : "",
+    core
+  ].filter(Boolean);
+
+  updateOnlineHint("Buscando esta cancion en catalogos sin anuncios...");
+
+  for (const query of queries) {
+    const found = await fetchFreeCatalogResults(query, 12).catch(() => []);
+    const match = found.find((item) => tokensAreNearDuplicate(trackTokens(item), trackTokens(current)))
+      || (query === queries[queries.length - 1] ? found[0] : null);
+    if (!match) continue;
+
+    const queue = nowQueue();
+    const idx = Math.max(0, nowIndex());
+    queue.splice(idx + 1, 0, match);
+    state.queue[state.mode][state.source] = queue;
+    if (isOnlineQueueMode()) onlineQueueState().related = queue;
+    renderQueue();
+    playItem(match, idx + 1);
+    updateOnlineHint(`Cambiado a ${providerLabel(match)}: sin anuncios.`);
+    return;
+  }
+
+  updateOnlineHint("No hay una version equivalente en los catalogos libres.");
 }
 
 function renderLibrary(items = null) {
@@ -3658,8 +3702,18 @@ function bindEvents() {
     });
   }
 
-  if (refs.navHome) refs.navHome.addEventListener("click", () => setView("home"));
-  if (refs.navExplore) refs.navExplore.addEventListener("click", () => setView("explore"));
+  if (refs.freeSwapBtn) {
+    refs.freeSwapBtn.addEventListener("click", () => {
+      refs.freeSwapBtn.disabled = true;
+      switchCurrentToFreeCatalog()
+        .catch(() => updateOnlineHint("No se pudo consultar los catalogos libres."))
+        .finally(() => {
+          refs.freeSwapBtn.disabled = false;
+        });
+    });
+  }
+
+  if (refs.navHome) refs.navHome.addEventListener("click", () => setView("home"));  if (refs.navExplore) refs.navExplore.addEventListener("click", () => setView("explore"));
   if (refs.navLibrary) refs.navLibrary.addEventListener("click", () => setView("library"));
 
   if (refs.libraryExtras) {
@@ -4026,7 +4080,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=36", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=38", { updateViaCache: "none" }).catch(() => null);
   }
 }
 

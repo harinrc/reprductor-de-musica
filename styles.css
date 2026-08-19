@@ -881,8 +881,8 @@ input[type="password"] {
     "meta"
     "controls"
     "seek"
-    "queue"
-    "advanced";
+    "advanced"
+    "queue";
 }
 
 .now-playing.is-compact .in-player-queue .track-list {
@@ -903,8 +903,8 @@ input[type="password"] {
     "meta"
     "controls"
     "seek"
-    "queue"
-    "advanced";
+    "advanced"
+    "queue";
 }
 
 .now-playing.is-tight .music-art {
@@ -913,6 +913,28 @@ input[type="password"] {
 
 .now-playing.is-tight .video-wrap {
   width: min(100%, 380px);
+}
+
+/* Apilado: los ajustes quedan en una sola linea para no empujar la cola. */
+.now-playing.is-compact .advanced-row,
+.now-playing.is-tight .advanced-row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  justify-content: flex-start;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+  -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 90%, transparent 100%);
+}
+
+.now-playing.is-compact .advanced-row::-webkit-scrollbar,
+.now-playing.is-tight .advanced-row::-webkit-scrollbar {
+  display: none;
+}
+
+.now-playing.is-compact .advanced-row > *,
+.now-playing.is-tight .advanced-row > * {
+  flex: 0 0 auto;
 }
 
 .advanced-row .chip {
@@ -1085,8 +1107,8 @@ label {
       "meta"
       "controls"
       "seek"
-      "queue"
-      "advanced";
+      "advanced"
+      "queue";
     gap: 10px;
     padding: 10px;
   }
