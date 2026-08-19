@@ -1,4 +1,4 @@
-const CACHE = "duoplayer-v31";
+const CACHE = "duoplayer-v32";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,6 +25,12 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  const url = new URL(event.request.url);
+  // Solo se cachea el shell propio: los streams y APIs externas no deben guardarse.
+  const cacheable = url.origin === self.location.origin && !event.request.headers.has("range");
+
+  if (!cacheable) return;
 
   event.respondWith(
     fetch(event.request)

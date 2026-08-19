@@ -40,8 +40,8 @@ const state = {
     video: { online: [], local: [] }
   },
   onlineQueue: {
-    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false },
-    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false }
+    music: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false, blockedIds: [] },
+    video: { related: [], results: [], view: "related", loading: false, lastSeedId: "", playedIds: [], playedSignatures: [], seedTrail: [], searchSeed: "", growthCycle: 0, reseedSeedId: "", reseeding: false, blockedIds: [] }
   }
 };
 
@@ -137,6 +137,7 @@ const PLAYBACK_NOTIFICATION_TAG = "duo-playback-controls";
 let hasAskedNotificationPermission = false;
 let playbackNotificationKey = "";
 let silentKeepAlive = null;
+let streamPlayer = null;
 let lastMediaSessionAssert = 0;
 
 function hasLocalApi() {
@@ -417,8 +418,12 @@ async function fetchRecommendationsSafe(videoId) {
   }
 }
 
+function isRadioPlayable(item) {
+  return item?.kind === "youtube" || item?.kind === "stream";
+}
+
 function rememberOnlinePlayback(item) {
-  if (!isOnlineQueueMode() || item?.kind !== "youtube" || !item?.id) return;
+  if (!isOnlineQueueMode() || !isRadioPlayable(item) || !item?.id) return;
   const qState = onlineQueueState();
   if (!Array.isArray(qState.playedIds)) qState.playedIds = [];
   qState.playedIds = [item.id, ...qState.playedIds.filter((id) => id !== item.id)].slice(0, 140);
@@ -431,6 +436,39 @@ function rememberOnlinePlayback(item) {
 
 // Nunca se busca el titulo exacto de la pista actual: eso devuelve la misma cancion
 // una y otra vez. Las consultas giran alrededor del artista y del genero detectado.
+// Relacionadas segun el origen de la pista: YouTube, Jamendo o busqueda por artista.
+async function fetchRelatedForItem(item) {
+  if (!item) return [];
+
+  if (item.kind === "youtube" && item.youtubeId) {
+    return fetchRecommendationsSafe(item.youtubeId);
+  }
+
+  const artist = artistHint(item);
+  const genre = item.genre || genreLabel[Array.from(radioGenreProfile(item))[0]] || "";
+  const tasks = [];
+
+  if (item.provider === "jamendo" && item.providerTrackId) {
+    tasks.push(fetchJamendoSimilar(item.providerTrackId, 20).catch(() => []));
+  }
+  if (item.provider === "audius" && genre) {
+    tasks.push(fetchAudiusTrending(audiusGenreFor(genre) || genre, 20).catch(() => []));
+  }
+  if (artist) {
+    tasks.push(fetchFreeCatalogResults(artist, 12).catch(() => []));
+    tasks.push(fetchYouTubeResults(`${artist} ${genre || "music"} mix`).catch(() => []));
+  } else if (genre) {
+    tasks.push(fetchMixedResults(`${genre} mix`).catch(() => []));
+  }
+
+  const buckets = await Promise.all(tasks);
+  return pickDiverseTracks(interleave(...buckets), {
+    max: 30,
+    blockedIds: new Set(item.id ? [item.id] : []),
+    blockedSignatures: new Set([trackSignature(item)].filter(Boolean))
+  });
+}
+
 function buildRadioRelatedQueries(qState) {
   const current = state.current || {};
   const artist = artistHint(current);
@@ -474,7 +512,7 @@ async function injectRadioFromQueryVariations(qState, related, existing, played,
   const artistCounts = artistCountsOf(related);
   let appended = 0;
   for (const query of queries) {
-    const candidates = await fetchYouTubeResults(query).catch(() => []);
+    const candidates = await fetchMixedResults(query).catch(() => []);
     const diverse = pickDiverseTracks(candidates, {
       max: Math.max(10, minAhead),
       blockedSignatures: existingSignatures,
@@ -501,7 +539,7 @@ async function injectRadioFromQueryVariations(qState, related, existing, played,
 
 // La cola sigue a la pista en reproduccion, no a la busqueda inicial.
 async function reseedRadioFromCurrent(insertCount = 6) {
-  if (state.source !== "online" || state.current?.kind !== "youtube") return;
+  if (state.source !== "online" || !isRadioPlayable(state.current)) return;
   const qState = onlineQueueState();
   const currentId = state.current.id;
   if (!currentId || qState.reseeding || qState.reseedSeedId === currentId) return;
@@ -512,11 +550,11 @@ async function reseedRadioFromCurrent(insertCount = 6) {
   qState.reseedSeedId = currentId;
   qState.reseeding = true;
   try {
-    const rec = await fetchRecommendationsSafe(state.current.youtubeId);
+    const rec = await fetchRelatedForItem(state.current);
     if (!rec.length) return;
 
     const existing = new Set(related.map((x) => x.id));
-    const played = new Set(qState.playedIds || []);
+    const played = new Set([...(qState.playedIds || []), ...(qState.blockedIds || [])]);
     const signatures = new Set((qState.playedSignatures || []).filter(Boolean));
     related.forEach((item) => {
       const sig = trackSignature(item);
@@ -551,7 +589,7 @@ async function reseedRadioFromCurrent(insertCount = 6) {
 }
 
 async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
-  if (state.source !== "online" || state.current?.kind !== "youtube") return;
+  if (state.source !== "online" || !isRadioPlayable(state.current)) return;
   const qState = onlineQueueState();
   if (qState.loading) return;
 
@@ -571,10 +609,10 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
     related[idx + 1],
     related[related.length - 1],
     ...qState.results.slice(0, 4)
-  ]).filter((x) => x?.youtubeId);
+  ]).filter(isRadioPlayable);
 
   const existing = new Set(related.map((x) => x.id));
-  const played = new Set(qState.playedIds || []);
+  const played = new Set([...(qState.playedIds || []), ...(qState.blockedIds || [])]);
   const existingSignatures = new Set((qState.playedSignatures || []).filter(Boolean));
   related.forEach((item) => {
     const sig = trackSignature(item);
@@ -588,10 +626,10 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
   updateRadioGrowingIndicator();
   try {
     for (const seed of seedCandidates) {
-      if (!seed?.youtubeId) continue;
+      if (!isRadioPlayable(seed)) continue;
       if (qState.seedTrail.includes(seed.id) && appended > 0) continue;
 
-      const rec = await fetchRecommendationsSafe(seed.youtubeId);
+      const rec = await fetchRelatedForItem(seed);
       if (!rec.length) continue;
 
       const diverseRec = pickDiverseTracks(rec, {
@@ -676,7 +714,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       const hint = artistHint(state.current) || "";
       const genre = genreLabel[Array.from(radioGenreProfile(state.current))[0]] || "pop";
       const query = hint ? `${hint} ${genre} mix` : `${genre} music mix`;
-      const more = await fetchYouTubeResults(query).catch(() => []);
+      const more = await fetchMixedResults(query).catch(() => []);
       const fallback = pickDiverseTracks(
         more.filter((r) => r?.id && !played.has(r.id)),
         {
@@ -1013,6 +1051,10 @@ function updateMediaSurface() {
 
   if (active.kind === "local") {
     refs.htmlPlayer.style.display = "block";
+  } else if (active.kind === "stream") {
+    refs.htmlPlayer.style.display = "none";
+    refs.videoFrameWrap.hidden = true;
+    refs.musicArt.hidden = false;
   } else if (online && isVideoMode) {
     refs.htmlPlayer.style.display = "none";
   } else if (active.kind === "youtube" && state.mode === "music") {
@@ -1374,14 +1416,22 @@ async function loadDiscovery() {
   }
 
   const query = moodQueries[state.selectedMood] || "top music";
+  const moodGenre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "";
   try {
-    const results = await fetchYouTubeResults(query);
+    const [results, freeTracks, trending] = await Promise.all([
+      fetchYouTubeResults(query),
+      fetchFreeCatalogResults(query, 12).catch(() => []),
+      freeCatalogsEnabled() ? fetchAudiusTrending(audiusGenreFor(moodGenre), 12).catch(() => []) : []
+    ]);
     if (requestId !== state.discoverRequestId) return;
     const fallback = getFallbackCatalogForMood(state.selectedMood);
-    const seeded = state.current?.kind === "youtube"
-      ? await fetchRecommendationsSafe(state.current.youtubeId).catch(() => [])
+    const seeded = isRadioPlayable(state.current)
+      ? await fetchRelatedForItem(state.current).catch(() => [])
       : [];
-    const combined = uniqueItems([...results, ...seeded, ...fallback]).slice(0, 30);
+    const combined = pickDiverseTracks(
+      interleave(results, freeTracks, trending).concat(seeded, fallback),
+      { max: 30 }
+    );
     const rotated = rotateItems(combined, state.discoverSeed + requestId);
     state.discoverCache[state.mode].online = rotated;
     setCachedValue(runtimeCache.discovery, cacheKey, rotated);
@@ -1522,9 +1572,9 @@ function buildOnlineQueue(seed, candidates) {
 
 async function startSmartPlayback(item, sourceItems = null) {
   const base = sourceItems || nowLibrary();
-  const onlineYoutube = state.source === "online" && item.kind === "youtube";
+  const onlineRadio = state.source === "online" && isRadioPlayable(item);
 
-  if (onlineYoutube) {
+  if (onlineRadio) {
     const qState = onlineQueueState();
     const seedSig = trackSignature(item);
     qState.results = pickDiverseTracks(base.length ? [...base] : [item], {
@@ -1556,12 +1606,12 @@ async function startSmartPlayback(item, sourceItems = null) {
   renderQueue();
   playItem(item, 0);
 
-  if (item.kind === "youtube") {
-    const rec = await fetchRecommendationsSafe(item.youtubeId);
+  if (isRadioPlayable(item)) {
+    const rec = await fetchRelatedForItem(item);
     if (rec.length) {
       const existing = new Set(nowQueue().map((x) => x.id));
       const fresh = rec.filter((r) => !existing.has(r.id));
-      if (onlineYoutube) {
+      if (onlineRadio) {
         const qState = onlineQueueState();
         const signatures = new Set();
         qState.related.forEach((x) => {
@@ -1669,7 +1719,7 @@ function drawVisualizerFrame() {
     let sum = 0;
     for (let i = 0; i < spectrum.length; i += 1) sum += spectrum[i];
     energy = Math.min(1, (sum / spectrum.length) / 180);
-  } else if (state.current?.kind === "youtube" && state.isPlaying) {
+  } else if (state.current?.kind !== "local" && state.isPlaying) {
     const t = performance.now() * 0.001;
     energy = 0.2 + Math.abs(Math.sin(t * 1.8)) * 0.35 + Math.random() * 0.12;
   }
@@ -1767,6 +1817,8 @@ function playItem(item, queuePosition = null) {
 
   if (item.kind === "local") {
     playLocal(item);
+  } else if (item.kind === "stream") {
+    playStream(item);
   } else {
     playYouTube(item);
   }
@@ -1776,7 +1828,7 @@ function playItem(item, queuePosition = null) {
   updatePrimaryPlayButton();
   renderQueue();
 
-  if (state.source === "online" && item.kind === "youtube") {
+  if (state.source === "online" && isRadioPlayable(item)) {
     reseedRadioFromCurrent(6).catch(() => null);
     ensureOnlineQueueGrowth(16, 48).catch(() => null);
   }
@@ -1864,6 +1916,7 @@ function playLocal(item) {
   if (!item.url) return;
 
   stopSilentKeepAlive();
+  stopStreamPlayer();
   connectLocalAudioAnalyser();
 
   refs.htmlPlayer.pause();
@@ -1880,6 +1933,74 @@ function playLocal(item) {
   refs.htmlPlayer.play().catch(() => {
     state.isPlaying = false;
   });
+}
+
+// Elemento propio para los catalogos libres: el analizador de audio del reproductor
+// local silencia cualquier fuente remota al enrutarla por Web Audio.
+function ensureStreamPlayer() {
+  if (streamPlayer) return streamPlayer;
+  const audio = document.createElement("audio");
+  audio.setAttribute("playsinline", "");
+  audio.preload = "none";
+  audio.style.display = "none";
+  document.body.appendChild(audio);
+  audio.addEventListener("timeupdate", () => {
+    if (state.current?.kind === "stream") updateTimeUi(audio.currentTime, audio.duration);
+  });
+  audio.addEventListener("ended", onMediaEnded);
+  audio.addEventListener("play", () => {
+    state.isPlaying = true;
+    updateMediaSession();
+    if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
+    updatePrimaryPlayButton();
+  });
+  audio.addEventListener("pause", () => {
+    if (state.current?.kind !== "stream") return;
+    state.isPlaying = false;
+    updateMediaSession();
+    if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
+    updatePrimaryPlayButton();
+  });
+  audio.addEventListener("error", () => {
+    if (state.current?.kind !== "stream") return;
+    updateOnlineHint("No se pudo reproducir esta pista del catalogo libre. Saltando.");
+    if (state.autoplay) nextTrack();
+  });
+  streamPlayer = audio;
+  return audio;
+}
+
+function stopStreamPlayer() {
+  if (streamPlayer) streamPlayer.pause();
+}
+
+function playStream(item) {
+  if (!item?.url) {
+    updateOnlineHint("Esta pista no tiene un stream valido.");
+    state.isPlaying = false;
+    updatePrimaryPlayButton();
+    return;
+  }
+
+  stopSilentKeepAlive();
+  refs.htmlPlayer.pause();
+  if (state.ytReady && state.ytPlayer) {
+    try { state.ytPlayer.pauseVideo(); } catch (_) {}
+  }
+
+  const audio = ensureStreamPlayer();
+  audio.src = item.url;
+  audio.playbackRate = Number(refs.speedSelect.value);
+  audio.volume = Number(refs.volumeBar.value);
+  audio.play().catch(() => {
+    state.isPlaying = false;
+    updatePrimaryPlayButton();
+  });
+  updateOnlineHint(item.provider === "jamendo" ? "Reproduciendo desde Jamendo." : "Reproduciendo desde Audius.");
+}
+
+function activeMediaElement() {
+  return state.current?.kind === "stream" ? ensureStreamPlayer() : refs.htmlPlayer;
 }
 
 function playYouTube(item) {
@@ -1982,6 +2103,8 @@ function togglePlay() {
 
   if (state.current.kind === "local") {
     refs.htmlPlayer.play().catch(() => null);
+  } else if (state.current.kind === "stream") {
+    ensureStreamPlayer().play().catch(() => null);
   } else if (state.ytReady) {
     startSilentKeepAlive();
     state.ytPlayer.playVideo();
@@ -2001,6 +2124,8 @@ function togglePause() {
 
   if (state.current.kind === "local") {
     refs.htmlPlayer.pause();
+  } else if (state.current.kind === "stream") {
+    stopStreamPlayer();
   } else if (state.ytReady) {
     state.ytPlayer.pauseVideo();
   }
@@ -2015,31 +2140,38 @@ function togglePause() {
 function seekBy(delta) {
   if (!state.current) return;
 
-  if (state.current.kind === "local") {
-    refs.htmlPlayer.currentTime = Math.max(0, refs.htmlPlayer.currentTime + delta);
-  } else if (state.ytReady) {
+  if (state.current.kind === "youtube") {
+    if (!state.ytReady) return;
     const now = state.ytPlayer.getCurrentTime();
     state.ytPlayer.seekTo(Math.max(0, now + delta), true);
+    return;
   }
+
+  const media = activeMediaElement();
+  media.currentTime = Math.max(0, media.currentTime + delta);
 }
 
 function setSeekPercent(value) {
   if (!state.current) return;
 
   const pct = Number(value) / 100;
-  if (state.current.kind === "local") {
-    const d = refs.htmlPlayer.duration || 0;
-    refs.htmlPlayer.currentTime = d * pct;
-  } else if (state.ytReady) {
+  if (state.current.kind === "youtube") {
+    if (!state.ytReady) return;
     const d = state.ytPlayer.getDuration() || 0;
     state.ytPlayer.seekTo(d * pct, true);
+    return;
   }
+
+  const media = activeMediaElement();
+  const d = media.duration || 0;
+  media.currentTime = d * pct;
 }
 
 function isAlreadyPlayed(item) {
   if (!isOnlineQueueMode() || !item) return false;
   const qState = onlineQueueState();
   if ((qState.playedIds || []).includes(item.id)) return true;
+  if ((qState.blockedIds || []).includes(item.id)) return true;
   const sig = trackSignature(item);
   return Boolean(sig && (qState.playedSignatures || []).includes(sig));
 }
@@ -2100,7 +2232,7 @@ async function handleQueueEnd() {
     return;
   }
 
-  if (isOnlineQueueMode() && state.current.kind === "youtube") {
+  if (isOnlineQueueMode() && isRadioPlayable(state.current)) {
     const qState = onlineQueueState();
     await ensureOnlineQueueGrowth(20, 56);
     let nextIdx = nowIndex() + 1;
@@ -2114,8 +2246,8 @@ async function handleQueueEnd() {
     }
   }
 
-  if (state.current.kind === "youtube") {
-    const rec = await fetchRecommendationsSafe(state.current.youtubeId);
+  if (isRadioPlayable(state.current)) {
+    const rec = await fetchRelatedForItem(state.current);
     if (rec.length) {
       const qState = isOnlineQueueMode() ? onlineQueueState() : null;
       const played = new Set(qState?.playedIds || []);
@@ -2164,7 +2296,11 @@ async function searchOnline() {
   refs.onlineSearchBtn.textContent = "Buscando...";
 
   try {
-    const results = await fetchYouTubeResults(query);
+    const [youtube, free] = await Promise.all([
+      fetchYouTubeResults(query).catch(() => []),
+      fetchFreeCatalogResults(query).catch(() => [])
+    ]);
+    const results = pickDiverseTracks(interleave(youtube, free), { max: 40 });
     if (!results.length) {
       throw new Error("Empty search results");
     }
@@ -2172,6 +2308,9 @@ async function searchOnline() {
     setResultsVisible(true);
     renderLibrary(results);
     refs.resultsSection?.scrollIntoView({ block: "start" });
+    if (free.length) {
+      updateOnlineHint(`Resultados de YouTube + catalogos libres (${free.length} pistas sin anuncios).`);
+    }
   } catch (err) {
     const fallback = searchFallbackCatalog(query);
     state.library[state.mode].online = fallback;
@@ -2185,6 +2324,165 @@ async function searchOnline() {
     refs.onlineSearchBtn.disabled = false;
     refs.onlineSearchBtn.textContent = "Buscar";
   }
+}
+
+const DUO_APP_NAME = "ReproductorDuo";
+const AUDIUS_FALLBACK_HOST = "https://discoveryprovider.audius.co";
+const JAMENDO_API = "https://api.jamendo.com/v3.0";
+let audiusHostPromise = null;
+
+function freeCatalogsEnabled() {
+  return appConfig.useFreeCatalogs !== false && state.mode === "music";
+}
+
+function jamendoClientId() {
+  return String(appConfig.jamendoClientId || "").trim();
+}
+
+async function audiusHost() {
+  if (!audiusHostPromise) {
+    audiusHostPromise = fetch("https://api.audius.co")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const hosts = Array.isArray(data?.data) ? data.data.filter(Boolean) : [];
+        return hosts[Math.floor(Math.random() * hosts.length)] || AUDIUS_FALLBACK_HOST;
+      })
+      .catch(() => AUDIUS_FALLBACK_HOST);
+  }
+  return audiusHostPromise;
+}
+
+function mapAudiusTrack(track, host) {
+  if (!track?.id) return null;
+  const artist = normalizeText(track.user?.name || track.user?.handle || "Audius");
+  const artwork = track.artwork || {};
+  return {
+    id: `audius-${track.id}`,
+    provider: "audius",
+    kind: "stream",
+    providerTrackId: String(track.id),
+    url: `${host}/v1/tracks/${encodeURIComponent(track.id)}/stream?app_name=${DUO_APP_NAME}`,
+    title: normalizeText(track.title || "Sin titulo"),
+    subtitle: `${artist} - ${formatTime(track.duration || 0)}`,
+    thumbnail: artwork["480x480"] || artwork["150x150"] || "",
+    genre: normalizeText(track.genre || "")
+  };
+}
+
+async function fetchAudiusResults(query, limit = 20) {
+  const host = await audiusHost();
+  const url = `${host}/v1/tracks/search?query=${encodeURIComponent(query)}&limit=${limit}&app_name=${DUO_APP_NAME}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (Array.isArray(data?.data) ? data.data : [])
+    .map((track) => mapAudiusTrack(track, host))
+    .filter(Boolean);
+}
+
+const AUDIUS_GENRES = {
+  edm: "Electronic",
+  house: "House",
+  trance: "Trance",
+  techno: "Techno",
+  "hip hop": "Hip-Hop/Rap",
+  hiphop: "Hip-Hop/Rap",
+  reggaeton: "Latin",
+  pop: "Pop",
+  rock: "Rock",
+  lofi: "Lo-Fi",
+  classical: "Classical",
+  jazz: "Jazz",
+  ambient: "Ambient"
+};
+
+function audiusGenreFor(genre) {
+  return AUDIUS_GENRES[String(genre || "").toLowerCase()] || "";
+}
+
+async function fetchAudiusTrending(genre = "", limit = 20) {
+  const host = await audiusHost();
+  const genreParam = genre ? `&genre=${encodeURIComponent(genre)}` : "";
+  const url = `${host}/v1/tracks/trending?limit=${limit}${genreParam}&app_name=${DUO_APP_NAME}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (Array.isArray(data?.data) ? data.data : [])
+    .map((track) => mapAudiusTrack(track, host))
+    .filter(Boolean);
+}
+
+function mapJamendoTrack(track) {
+  if (!track?.id || !track.audio) return null;
+  const artist = normalizeText(track.artist_name || "Jamendo");
+  return {
+    id: `jamendo-${track.id}`,
+    provider: "jamendo",
+    kind: "stream",
+    providerTrackId: String(track.id),
+    url: track.audio,
+    title: normalizeText(track.name || "Sin titulo"),
+    subtitle: `${artist} - ${formatTime(Number(track.duration) || 0)}`,
+    thumbnail: track.album_image || track.image || "",
+    genre: normalizeText(track.musicinfo?.tags?.genres?.[0] || "")
+  };
+}
+
+async function fetchJamendoJson(path, params) {
+  const clientId = jamendoClientId();
+  if (!clientId) return [];
+  const search = new URLSearchParams({
+    client_id: clientId,
+    format: "json",
+    audioformat: "mp32",
+    include: "musicinfo",
+    ...params
+  });
+  const res = await fetch(`${JAMENDO_API}${path}?${search.toString()}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (Array.isArray(data?.results) ? data.results : []).map(mapJamendoTrack).filter(Boolean);
+}
+
+async function fetchJamendoResults(query, limit = 20) {
+  return fetchJamendoJson("/tracks/", { limit: String(limit), search: query, groupby: "artist_id" });
+}
+
+async function fetchJamendoSimilar(trackId, limit = 20) {
+  return fetchJamendoJson("/tracks/similar/", { limit: String(limit), id: String(trackId) });
+}
+
+async function fetchJamendoByTag(tag, limit = 20) {
+  return fetchJamendoJson("/tracks/", { limit: String(limit), fuzzytags: tag, groupby: "artist_id", boost: "popularity_month" });
+}
+
+async function fetchFreeCatalogResults(query, limit = 16) {
+  if (!freeCatalogsEnabled() || !normalizeText(query)) return [];
+  const [audius, jamendo] = await Promise.all([
+    fetchAudiusResults(query, limit).catch(() => []),
+    fetchJamendoResults(query, limit).catch(() => [])
+  ]);
+  return interleave(audius, jamendo);
+}
+
+function interleave(...lists) {
+  const out = [];
+  const max = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < max; i += 1) {
+    lists.forEach((list) => {
+      if (list[i]) out.push(list[i]);
+    });
+  }
+  return out;
+}
+
+// Fuente unica para la radio: mezcla YouTube con los catalogos libres y deduplica.
+async function fetchMixedResults(query) {
+  const [youtube, free] = await Promise.all([
+    fetchYouTubeResults(query).catch(() => []),
+    fetchFreeCatalogResults(query).catch(() => [])
+  ]);
+  return pickDiverseTracks(interleave(youtube, free), { max: 40 });
 }
 
 async function fetchYouTubeResults(query) {
@@ -2764,11 +3062,11 @@ function setMediaActionHandlers() {
     navigator.mediaSession.setActionHandler("seekto", (details) => {
       if (!details.seekTime && details.seekTime !== 0) return;
       if (!state.current) return;
-      if (state.current.kind === "local") {
-        refs.htmlPlayer.currentTime = details.seekTime;
-      } else if (state.ytReady) {
-        state.ytPlayer.seekTo(details.seekTime, true);
+      if (state.current.kind === "youtube") {
+        if (state.ytReady) state.ytPlayer.seekTo(details.seekTime, true);
+        return;
       }
+      activeMediaElement().currentTime = details.seekTime;
     });
   } catch (_) {}
 }
@@ -2979,12 +3277,14 @@ function bindEvents() {
   refs.volumeBar.addEventListener("input", () => {
     const v = Number(refs.volumeBar.value);
     refs.htmlPlayer.volume = v;
+    if (streamPlayer) streamPlayer.volume = v;
     if (state.ytReady) state.ytPlayer.setVolume(Math.round(v * 100));
   });
 
   refs.speedSelect.addEventListener("change", () => {
     const rate = Number(refs.speedSelect.value);
     refs.htmlPlayer.playbackRate = rate;
+    if (streamPlayer) streamPlayer.playbackRate = rate;
     if (state.ytReady) state.ytPlayer.setPlaybackRate(rate);
   });
 
@@ -3201,10 +3501,54 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
           if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
           updatePrimaryPlayButton();
         }
+      },
+      onError: (event) => {
+        handleYouTubePlaybackError(event?.data);
       }
     }
   });
 };
+
+// 2: id invalido, 5: error del reproductor HTML5, 100: no disponible,
+// 101/150: el dueno no permite incrustar el video.
+function handleYouTubePlaybackError(code) {
+  const current = state.current;
+  if (!current || current.kind !== "youtube") return;
+
+  if (isOnlineQueueMode()) {
+    const qState = onlineQueueState();
+    if (!Array.isArray(qState.blockedIds)) qState.blockedIds = [];
+    if (current.id && !qState.blockedIds.includes(current.id)) {
+      qState.blockedIds.push(current.id);
+    }
+    dropFromQueues(current.id);
+  }
+
+  const reason = code === 101 || code === 150
+    ? "El autor no permite reproducir este video fuera de YouTube."
+    : "Este video no esta disponible.";
+  updateOnlineHint(`${reason} Saltando a la siguiente.`);
+
+  if (!state.autoplay) {
+    state.isPlaying = false;
+    stopSilentKeepAlive();
+    updatePrimaryPlayButton();
+    return;
+  }
+
+  nextTrack();
+}
+
+function dropFromQueues(id) {
+  if (!id) return;
+  const qState = onlineQueueState();
+  const idx = nowIndex();
+  qState.related = qState.related.filter((x) => x.id !== id);
+  qState.results = qState.results.filter((x) => x.id !== id);
+  state.queue[state.mode][state.source] = state.queue[state.mode][state.source].filter((x) => x.id !== id);
+  setNowIndex(Math.max(-1, idx - 1));
+  renderQueue();
+}
 
 function tick() {
   if (state.current && state.current.kind === "youtube" && state.ytReady) {
@@ -3293,7 +3637,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=31", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=32", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
