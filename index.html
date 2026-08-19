@@ -21,9 +21,9 @@
         <span class="dot"></span>
         <strong>Duo</strong>
       </div>
-      <button class="rail-btn is-active" aria-label="Inicio" title="Inicio">Inicio</button>
-      <button class="rail-btn" aria-label="Explorar" title="Explorar">Explorar</button>
-      <button class="rail-btn" aria-label="Biblioteca" title="Biblioteca">Biblioteca</button>
+      <button id="navHome" class="rail-btn is-active" aria-label="Inicio" title="Inicio">Inicio</button>
+      <button id="navExplore" class="rail-btn" aria-label="Explorar" title="Explorar">Explorar</button>
+      <button id="navLibrary" class="rail-btn" aria-label="Biblioteca" title="Biblioteca">Biblioteca</button>
     </aside>
 
     <main class="app-shell">
@@ -69,7 +69,7 @@
 
     <section class="discover panel" id="discoverSection">
       <div class="discover-head">
-        <h2>Descubrir</h2>
+        <h2 id="discoverTitle">Descubrir</h2>
         <div id="moodChips" class="mood-chips"></div>
       </div>
       <ul id="discoverList" class="discover-list" aria-live="polite"></ul>
@@ -164,9 +164,10 @@
     <section id="resultsSection" class="content-grid" hidden>
       <article class="panel">
         <div class="results-head">
-          <h2>Resultados / Biblioteca</h2>
+          <h2 id="resultsTitle">Resultados / Biblioteca</h2>
           <button id="closeResultsBtn" class="ghost" aria-label="Cerrar resultados y biblioteca">Cerrar</button>
         </div>
+        <div id="libraryExtras" class="library-extras" hidden></div>
         <ul id="libraryList" class="track-list" aria-live="polite"></ul>
       </article>
     </section>

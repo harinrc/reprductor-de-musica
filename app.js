@@ -1,6 +1,7 @@
 const state = {
   mode: "music",
   source: "local",
+  view: "home",
   library: {
     music: { local: [], online: [] },
     video: { local: [], online: [] }
@@ -139,6 +140,7 @@ let hasAskedNotificationPermission = false;
 let playbackNotificationKey = "";
 let silentKeepAlive = null;
 let streamPlayer = null;
+let renderedLibraryItems = [];
 let lastMediaSessionAssert = 0;
 
 function hasLocalApi() {
@@ -316,7 +318,13 @@ const refs = {
   onlineSearchBtn: document.getElementById("onlineSearchBtn"),
   onlineApiRow: document.getElementById("onlineApiRow"),
   discoverSection: document.getElementById("discoverSection"),
+  discoverTitle: document.getElementById("discoverTitle"),
   discoverList: document.getElementById("discoverList"),
+  navHome: document.getElementById("navHome"),
+  navExplore: document.getElementById("navExplore"),
+  navLibrary: document.getElementById("navLibrary"),
+  libraryExtras: document.getElementById("libraryExtras"),
+  resultsTitle: document.getElementById("resultsTitle"),
   moodChips: document.getElementById("moodChips"),
   resultsSection: document.getElementById("resultsSection"),
   localPicker: document.getElementById("localPicker"),
@@ -1077,7 +1085,6 @@ function setSource(source) {
 function updateMediaSurface() {
   const isVideoMode = state.mode === "video";
   const active = state.current;
-  const online = state.source === "online";
   refs.videoFrameWrap.classList.remove("audio-host");
   refs.videoFrameWrap.hidden = !isVideoMode;
   refs.musicArt.hidden = isVideoMode;
@@ -1088,23 +1095,190 @@ function updateMediaSurface() {
   }
 
   if (active.kind === "local") {
-    refs.htmlPlayer.style.display = "block";
-  } else if (active.kind === "stream") {
+    // El video local necesita el contenedor visible aunque estemos en modo musica.
+    refs.htmlPlayer.style.display = isVideoMode ? "block" : "none";
+    if (isVideoMode) {
+      refs.videoFrameWrap.hidden = false;
+      refs.musicArt.hidden = true;
+    }
+    return;
+  }
+
+  if (active.kind === "stream") {
     refs.htmlPlayer.style.display = "none";
     refs.videoFrameWrap.hidden = true;
     refs.musicArt.hidden = false;
-  } else if (online && isVideoMode) {
-    refs.htmlPlayer.style.display = "none";
-  } else if (active.kind === "youtube" && state.mode === "music") {
+    return;
+  }
+
+  refs.htmlPlayer.style.display = "none";
+  if (active.kind === "youtube" && !isVideoMode) {
     // Keep YouTube iframe mounted for reliable audio playback in music mode.
     refs.videoFrameWrap.hidden = false;
     refs.videoFrameWrap.classList.add("audio-host");
-    refs.htmlPlayer.style.display = "none";
   }
+}
+
+function providerLabel(item) {
+  if (!item) return "";
+  if (item.kind === "local") return "Local";
+  if (item.provider === "audius") return "Audius";
+  if (item.provider === "jamendo") return "Jamendo";
+  if (item.kind === "youtube") return "YouTube";
+  return "";
+}
+
+function providerTag(item) {
+  const label = providerLabel(item);
+  if (!label) return "";
+  return `<span class="source-tag source-${label.toLowerCase()}">${label}</span>`;
+}
+
+const HISTORY_KEY = "duo.history";
+const SEARCH_KEY = "duo.searches";
+const HISTORY_LIMIT = 60;
+const SEARCH_LIMIT = 18;
+
+function readStoredList(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeStoredList(key, list) {
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
+function rememberPlayedItem(item) {
+  if (!item?.id) return;
+  const isLocal = item.kind === "local";
+  const entry = {
+    id: item.id,
+    kind: item.kind || "youtube",
+    provider: item.provider || "",
+    title: item.title || "",
+    subtitle: item.subtitle || "",
+    thumbnail: isLocal ? "" : (item.thumbnail || ""),
+    youtubeId: item.youtubeId || "",
+    url: isLocal ? "" : (item.url || ""),
+    genre: item.genre || "",
+    mode: state.mode,
+    at: Date.now()
+  };
+  writeStoredList(
+    HISTORY_KEY,
+    [entry, ...readStoredList(HISTORY_KEY).filter((x) => x?.id !== entry.id)].slice(0, HISTORY_LIMIT)
+  );
+}
+
+function rememberSearchTerm(term) {
+  const query = normalizeText(term);
+  if (!query) return;
+  writeStoredList(
+    SEARCH_KEY,
+    [query, ...readStoredList(SEARCH_KEY).filter((x) => String(x).toLowerCase() !== query.toLowerCase())].slice(0, SEARCH_LIMIT)
+  );
+}
+
+// Las pistas locales guardan solo el id: su blob url se rehace al restaurar la libreria.
+function historyEntries(mode = null) {
+  const localTracks = [...state.library.music.local, ...state.library.video.local];
+  return readStoredList(HISTORY_KEY)
+    .filter((x) => x?.id && (!mode || x.mode === mode))
+    .map((entry) => (entry.kind === "local"
+      ? localTracks.find((track) => track.id === entry.id) || null
+      : entry))
+    .filter(Boolean);
+}
+
+function historyArtists(limit = 12) {
+  const seen = [];
+  historyEntries().forEach((item) => {
+    const artist = artistHint(item);
+    if (artist && !seen.includes(artist)) seen.push(artist);
+  });
+  return seen.slice(0, limit);
+}
+
+function setView(view) {
+  state.view = view;
+  const map = { home: refs.navHome, explore: refs.navExplore, library: refs.navLibrary };
+  Object.entries(map).forEach(([key, btn]) => {
+    if (btn) btn.classList.toggle("is-active", key === view);
+  });
+
+  if (refs.discoverSection) refs.discoverSection.hidden = view === "library";
+  if (refs.discoverTitle) {
+    refs.discoverTitle.textContent = view === "explore" ? "Explorar" : "Descubrir";
+  }
+
+  if (view === "library") {
+    renderLibraryView();
+    setResultsVisible(true);
+    refs.resultsSection?.scrollIntoView({ block: "start" });
+    return;
+  }
+
+  if (refs.libraryExtras) refs.libraryExtras.hidden = true;
+  if (refs.resultsTitle) refs.resultsTitle.textContent = "Resultados / Biblioteca";
+  renderLibrary();
+  setResultsVisible(nowLibrary().length > 0);
+
+  if (view === "explore") {
+    loadDiscovery();
+    refs.discoverSection?.scrollIntoView({ block: "start" });
+  }
+}
+
+function renderLibraryView() {
+  const items = historyEntries(state.mode);
+  if (refs.resultsTitle) {
+    refs.resultsTitle.textContent = state.mode === "music" ? "Tu biblioteca de musica" : "Tu biblioteca de videos";
+  }
+
+  renderLibrary(items.length ? items : []);
+  if (!refs.libraryExtras) return;
+
+  const searches = readStoredList(SEARCH_KEY);
+  const artists = historyArtists();
+  const chips = (title, values) => (values.length
+    ? `<div class="library-group">
+        <h3>${title}</h3>
+        <div class="library-chips">
+          ${values.map((v) => `<button class="chip" data-query="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join("")}
+        </div>
+      </div>`
+    : "");
+
+  const html = `${chips("Artistas escuchados", artists)}${chips("Busquedas recientes", searches)}`;
+  refs.libraryExtras.innerHTML = html
+    || `<p class="online-hint">Aun no hay historial. Reproduce algo y aparecera aqui.</p>`;
+  refs.libraryExtras.hidden = false;
+}
+
+function runLibraryQuery(query) {
+  if (!query) return;
+  if (state.source === "local") {
+    refs.localQuery.value = query;
+    setView("home");
+    filterLocal();
+    return;
+  }
+  refs.onlineQuery.value = query;
+  setView("home");
+  searchOnline();
 }
 
 function renderLibrary(items = null) {
   const list = items || nowLibrary();
+  renderedLibraryItems = list;
   refs.libraryList.innerHTML = "";
 
   if (!list.length) {
@@ -1132,7 +1306,7 @@ function renderLibrary(items = null) {
             <div class="title">${escapeHtml(item.title)}</div>
             ${radioTag}
           </div>
-          <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+          <div class="sub">${providerTag(item)}${escapeHtml(item.subtitle || "")}</div>
         </div>
       </div>
       <div class="actions">
@@ -1173,7 +1347,7 @@ function renderQueue() {
         ${thumb}
         <div>
           <div class="title">${escapeHtml(item.title)}</div>
-          <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+          <div class="sub">${providerTag(item)}${escapeHtml(item.subtitle || "")}</div>
         </div>
       </div>
       <div class="actions">
@@ -1186,7 +1360,11 @@ function renderQueue() {
 }
 
 function renderAll() {
-  renderLibrary();
+  if (state.view === "library") {
+    renderLibraryView();
+  } else {
+    renderLibrary();
+  }
   updateQueueViewUi();
   renderQueue();
 }
@@ -1419,7 +1597,7 @@ function renderDiscovery(items) {
       <img src="${escapeHtml(item.thumbnail || "icon-192.svg")}" alt="Portada" loading="lazy" />
       <div class="meta">
         <div class="title">${escapeHtml(item.title)}</div>
-        <div class="sub">${escapeHtml(item.subtitle || "")}</div>
+        <div class="sub">${providerTag(item)}${escapeHtml(item.subtitle || "")}</div>
       </div>
     `;
     li.addEventListener("click", () => {
@@ -1431,11 +1609,21 @@ function renderDiscovery(items) {
   });
 }
 
+// En Explorar las sugerencias se amplian con lo que el usuario ya escucho o busco.
+function exploreSeedQueries() {
+  const genre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "";
+  const seeds = [];
+  historyArtists(2).forEach((artist) => seeds.push(genre ? `${artist} ${genre} mix` : `${artist} mix`));
+  const lastSearch = readStoredList(SEARCH_KEY)[0];
+  if (lastSearch) seeds.push(`${lastSearch} similar`);
+  return seeds.slice(0, 3);
+}
+
 async function loadDiscovery() {
   if (!refs.discoverSection) return;
 
   const requestId = ++state.discoverRequestId;
-  const cacheKey = `${state.mode}|${state.source}|${state.selectedMood}`;
+  const cacheKey = `${state.mode}|${state.source}|${state.selectedMood}|${state.view}`;
   const cached = getCachedValue(runtimeCache.discovery, cacheKey, DISCOVERY_CACHE_TTL);
 
   if (cached?.length) {
@@ -1443,13 +1631,13 @@ async function loadDiscovery() {
   }
 
   if (state.source === "local") {
-    const local = state.library[state.mode].local.slice(0, 24);
-    const fallback = getFallbackCatalogForMood(state.selectedMood);
-    const combined = uniqueItems([...local, ...fallback]).slice(0, 24);
+    // El descubrir local solo muestra archivos propios, nunca catalogo online.
+    const local = state.library[state.mode].local;
+    const combined = rotateItems(local, state.discoverSeed + requestId).slice(0, 24);
     state.discoverCache[state.mode].local = combined;
     setCachedValue(runtimeCache.discovery, cacheKey, combined);
     if (requestId !== state.discoverRequestId) return;
-    renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
+    renderDiscovery(combined);
     return;
   }
 
@@ -1462,12 +1650,16 @@ async function loadDiscovery() {
       freeCatalogsEnabled() ? fetchAudiusTrending(audiusGenreFor(moodGenre), 12).catch(() => []) : []
     ]);
     if (requestId !== state.discoverRequestId) return;
+    const explore = state.view === "explore"
+      ? (await Promise.all(exploreSeedQueries().map((q) => fetchMixedResults(q).catch(() => [])))).flat()
+      : [];
+    if (requestId !== state.discoverRequestId) return;
     const fallback = getFallbackCatalogForMood(state.selectedMood);
     const seeded = isRadioPlayable(state.current)
       ? await fetchRelatedForItem(state.current).catch(() => [])
       : [];
     const combined = pickDiverseTracks(
-      interleave(results, freeTracks, trending).concat(seeded, fallback),
+      interleave(results, freeTracks, trending, explore).concat(seeded, fallback),
       { max: 30 }
     );
     const rotated = rotateItems(combined, state.discoverSeed + requestId);
@@ -1821,7 +2013,9 @@ function drawVisualizerFrame() {
 }
 
 function findInLibraryById(id) {
-  return nowLibrary().find((x) => x.id === id) || null;
+  return renderedLibraryItems.find((x) => x.id === id)
+    || nowLibrary().find((x) => x.id === id)
+    || null;
 }
 
 function enqueue(item) {
@@ -1834,6 +2028,7 @@ function playItem(item, queuePosition = null) {
 
   setPlayerOpen(true);
   rememberOnlinePlayback(item);
+  rememberPlayedItem(item);
 
   state.current = item;
   state.isPlaying = true;
@@ -2417,6 +2612,7 @@ async function searchOnline() {
   const qState = onlineQueueState();
   qState.searchSeed = query;
   qState.growthCycle = 0;
+  rememberSearchTerm(query);
 
   refs.onlineSearchBtn.disabled = true;
   refs.onlineSearchBtn.textContent = "Buscando...";
@@ -3008,14 +3204,30 @@ async function buildLocalItem(file) {
   };
 }
 
+const AUDIO_FILE_EXT = /\.(mp3|m4a|m4b|aac|flac|wav|wave|ogg|oga|opus|wma|alac|aif|aiff|amr|mka)$/i;
+const VIDEO_FILE_EXT = /\.(mp4|m4v|mkv|webm|mov|avi|wmv|flv|3gp|3g2|mpeg|mpg|mts|m2ts|ts|ogv)$/i;
+
+// Al cargar carpetas muchos archivos llegan sin MIME; hay que mirar la extension.
+function isAcceptedLocalFile(file, mode) {
+  const type = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "");
+  if (mode === "music") {
+    if (type.startsWith("audio/")) return true;
+    if (type.startsWith("video/")) return false;
+    return AUDIO_FILE_EXT.test(name);
+  }
+  if (type.startsWith("video/")) return true;
+  if (type.startsWith("audio/")) return false;
+  return VIDEO_FILE_EXT.test(name);
+}
+
 async function loadLocalFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
 
-  const kindAccept = state.mode === "music" ? "audio/" : "video/";
-  const accepted = files.filter((f) => f.type.startsWith(kindAccept));
+  const accepted = files.filter((f) => isAcceptedLocalFile(f, state.mode));
   if (!accepted.length) {
-    updateOnlineHint("No se encontraron archivos compatibles en esta seleccion.");
+    updateOnlineHint(`No se encontraron archivos de ${state.mode === "music" ? "audio" : "video"} en esta seleccion.`);
     return;
   }
 
@@ -3031,10 +3243,15 @@ async function loadLocalFiles(fileList) {
   state.queue[state.mode].local = [...state.library[state.mode].local];
   await persistLocalLibrary(state.mode);
 
+  const skipped = files.length - accepted.length;
   setResultsVisible(true);
   renderLibrary();
   renderQueue();
-  updateOnlineHint(`Biblioteca local: ${state.library[state.mode].local.length} pistas cargadas.`);
+  loadDiscovery();
+  updateOnlineHint(
+    `Biblioteca local: ${state.library[state.mode].local.length} pistas en la cola.`
+    + (skipped > 0 ? ` (${skipped} archivos omitidos por formato)` : "")
+  );
 }
 
 function filterLocal() {
@@ -3277,7 +3494,7 @@ function bindEvents() {
     if (!item) return;
 
     if (action === "play") {
-      startSmartPlayback(item);
+      startSmartPlayback(item, renderedLibraryItems);
     }
 
     if (action === "add") {
@@ -3438,6 +3655,18 @@ function bindEvents() {
       saveBackgroundPreference(state.preferFreeInBackground);
       updateBackgroundPreferenceUi();
       if (state.preferFreeInBackground) ensureBackgroundStreamsAhead().catch(() => null);
+    });
+  }
+
+  if (refs.navHome) refs.navHome.addEventListener("click", () => setView("home"));
+  if (refs.navExplore) refs.navExplore.addEventListener("click", () => setView("explore"));
+  if (refs.navLibrary) refs.navLibrary.addEventListener("click", () => setView("library"));
+
+  if (refs.libraryExtras) {
+    refs.libraryExtras.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-query]");
+      if (!btn) return;
+      runLibraryQuery(btn.getAttribute("data-query"));
     });
   }
 
@@ -3797,7 +4026,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=35", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=36", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
