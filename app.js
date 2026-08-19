@@ -1248,10 +1248,10 @@ function applyPlayerAdaptiveLayout() {
   fitPlayerToViewport();
   const w = panel.clientWidth;
   const h = panel.clientHeight;
-  const compactByViewport = window.innerWidth < 1200 || window.innerHeight < 820;
-  const tightByViewport = window.innerHeight < 720;
-  panel.classList.toggle("is-compact", compactByViewport || w < 1040 || h < 720);
-  panel.classList.toggle("is-tight", tightByViewport || w < 900 || h < 640);
+  const compactByViewport = window.innerWidth < 1024;
+  const tightByViewport = window.innerWidth < 760;
+  panel.classList.toggle("is-compact", compactByViewport || w < 720 || h < 420);
+  panel.classList.toggle("is-tight", tightByViewport || w < 560 || h < 340);
 }
 
 function fitPlayerToViewport() {
@@ -3797,7 +3797,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=34", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=35", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
