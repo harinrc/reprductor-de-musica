@@ -20,6 +20,7 @@ const state = {
   ytReady: false,
   ytPlayer: null,
   isPlaying: false,
+  userPaused: false,
   youtubeApiKey: "",
   pendingYouTubeItem: null,
   visualizer: {
@@ -135,6 +136,8 @@ let localDbPromise = null;
 const PLAYBACK_NOTIFICATION_TAG = "duo-playback-controls";
 let hasAskedNotificationPermission = false;
 let playbackNotificationKey = "";
+let silentKeepAlive = null;
+let lastMediaSessionAssert = 0;
 
 function hasLocalApi() {
   return location.protocol === "http:" || location.protocol === "https:";
@@ -1746,6 +1749,7 @@ function playItem(item, queuePosition = null) {
 
   state.current = item;
   state.isPlaying = true;
+  state.userPaused = false;
   updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
 
   if (queuePosition == null) {
@@ -1859,6 +1863,7 @@ function sampleImageColor(img) {
 function playLocal(item) {
   if (!item.url) return;
 
+  stopSilentKeepAlive();
   connectLocalAudioAnalyser();
 
   refs.htmlPlayer.pause();
@@ -1898,17 +1903,87 @@ function playYouTube(item) {
   state.ytPlayer.playVideo();
   state.ytPlayer.setPlaybackRate(Number(refs.speedSelect.value));
   state.ytPlayer.setVolume(Math.round(Number(refs.volumeBar.value) * 100));
+  startSilentKeepAlive();
+  setMediaActionHandlers();
   updateOnlineHint("Reproduciendo en YouTube.");
+}
+
+function createSilentAudioUrl(seconds = 12) {
+  const sampleRate = 8000;
+  const dataSize = sampleRate * seconds * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeText = (offset, text) => {
+    for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  return URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+}
+
+function ensureSilentKeepAlive() {
+  if (silentKeepAlive) return silentKeepAlive;
+  const audio = document.createElement("audio");
+  audio.src = createSilentAudioUrl(12);
+  audio.loop = true;
+  audio.volume = 0.0001;
+  audio.setAttribute("playsinline", "");
+  audio.style.display = "none";
+  document.body.appendChild(audio);
+  silentKeepAlive = audio;
+  return audio;
+}
+
+// El iframe de YouTube no expone controles del sistema ni sigue sonando en segundo
+// plano; este audio silencioso mantiene la sesion de medios del sitio activa.
+function startSilentKeepAlive() {
+  const audio = ensureSilentKeepAlive();
+  if (!audio.paused) return;
+  audio.play().catch(() => null);
+}
+
+function stopSilentKeepAlive() {
+  if (silentKeepAlive) silentKeepAlive.pause();
+}
+
+function resumeYouTubeSoon() {
+  if (!state.ytReady || !state.ytPlayer) return;
+  [150, 700, 1800].forEach((delay) => {
+    setTimeout(() => {
+      if (state.userPaused || !state.isPlaying) return;
+      if (state.current?.kind !== "youtube") return;
+      try {
+        if (state.ytPlayer.getPlayerState() !== 1) state.ytPlayer.playVideo();
+      } catch (_) {
+        // Ignore player errors while it reloads.
+      }
+    }, delay);
+  });
 }
 
 function togglePlay() {
   if (!state.current) return;
 
+  state.userPaused = false;
   updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
 
   if (state.current.kind === "local") {
     refs.htmlPlayer.play().catch(() => null);
   } else if (state.ytReady) {
+    startSilentKeepAlive();
     state.ytPlayer.playVideo();
   }
 
@@ -1921,6 +1996,7 @@ function togglePlay() {
 function togglePause() {
   if (!state.current) return;
 
+  state.userPaused = true;
   updatePlaybackNotification({ fromUserGesture: true, force: true }).catch(() => null);
 
   if (state.current.kind === "local") {
@@ -1929,6 +2005,7 @@ function togglePause() {
     state.ytPlayer.pauseVideo();
   }
 
+  stopSilentKeepAlive();
   state.isPlaying = false;
   updateMediaSession();
   if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
@@ -2019,6 +2096,7 @@ async function handleQueueEnd() {
 
   if (!state.autoplay) {
     state.isPlaying = false;
+    stopSilentKeepAlive();
     return;
   }
 
@@ -2951,6 +3029,12 @@ function bindEvents() {
     if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
     updatePrimaryPlayButton();
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (state.current?.kind !== "youtube" || state.userPaused || !state.isPlaying) return;
+    startSilentKeepAlive();
+    resumeYouTubeSoon();
+  });
 }
 
 function escapeHtml(str) {
@@ -3098,12 +3182,21 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
         if (event.data === YT.PlayerState.ENDED) onMediaEnded();
         if (event.data === YT.PlayerState.PLAYING) {
           state.isPlaying = true;
+          state.userPaused = false;
+          startSilentKeepAlive();
+          setMediaActionHandlers();
           updateMediaSession();
           if (refs.miniPlayPause) refs.miniPlayPause.textContent = "⏸";
           updatePrimaryPlayButton();
         }
         if (event.data === YT.PlayerState.PAUSED) {
+          // YouTube pausa solo al pasar a segundo plano; se reanuda si el usuario no pauso.
+          if (!state.userPaused && document.hidden) {
+            resumeYouTubeSoon();
+            return;
+          }
           state.isPlaying = false;
+          stopSilentKeepAlive();
           updateMediaSession();
           if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
           updatePrimaryPlayButton();
@@ -3118,6 +3211,14 @@ function tick() {
     const current = state.ytPlayer.getCurrentTime();
     const duration = state.ytPlayer.getDuration();
     updateTimeUi(current, duration);
+
+    // El iframe reclama la sesion de medios; hay que reafirmarla cada tanto.
+    const now = Date.now();
+    if (state.isPlaying && now - lastMediaSessionAssert > 4000) {
+      lastMediaSessionAssert = now;
+      setMediaActionHandlers();
+      updateMediaSession();
+    }
   }
 
   drawVisualizerFrame();
