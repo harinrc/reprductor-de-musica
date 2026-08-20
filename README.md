@@ -13,14 +13,19 @@ App web para reproducir Musica y Videos en modo separado:
 
 La app no depende solo de YouTube. Se combinan dos tipos de fuente:
 
-- **Reproducibles**: YouTube, Audius, Jamendo y radios en vivo (radio-browser.info).
+- **Reproducibles**: YouTube, Audius, Jamendo, Openverse (Jamendo/ccMixter/FMA sin clave) y radios en vivo (radio-browser.info).
 - **De referencia** (dicen que canciones existen y cuales se parecen): Deezer, iTunes y Last.fm.
   Cada sugerencia de estas plataformas se resuelve a una fuente reproducible antes de mostrarse.
   Spotify no se puede usar desde el navegador: exige OAuth de servidor y no permite streaming sin su SDK.
 
+La busqueda va en dos pasadas: primero pinta YouTube + catalogos libres + radios, y despues
+añade las coincidencias de Deezer/iTunes/Last.fm ya resueltas (tardan mas porque hay que
+localizar el audio). La etiqueta de cada pista indica de donde suena y que plataforma la sugirio.
+
 En [config.js](config.js):
 
-- `jamendoClientId`: catalogo libre de Jamendo (gratis en devportal.jamendo.com).
+- `jamendoClientId`: catalogo libre de Jamendo directo (gratis en devportal.jamendo.com).
+  Sin esta clave Jamendo sigue llegando de forma parcial a traves de Openverse.
 - `lastfmApiKey`: mejora mucho las recomendaciones "canciones similares" (gratis en last.fm/api).
 - `useMetadataCatalogs`: activa Deezer/iTunes/Last.fm como catalogo de referencia.
 - `useLiveRadio`: activa las emisoras en vivo (solo streams https).

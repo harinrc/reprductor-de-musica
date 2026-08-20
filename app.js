@@ -37,6 +37,7 @@ const state = {
   selectedMood: "Energia",
   discoverSeed: Math.floor(Math.random() * 100000),
   discoverRequestId: 0,
+  searchRequestId: 0,
   discoverRotation: 0,
   discoverShownIds: [],
   discoverLoading: false,
@@ -1210,6 +1211,7 @@ function providerLabel(item) {
   if (item.kind === "local") return "Local";
   if (item.provider === "audius") return "Audius";
   if (item.provider === "jamendo") return "Jamendo";
+  if (item.provider === "openverse") return "Openverse";
   if (item.provider === "radio") return "Radio";
   if (item.kind === "youtube") return "YouTube";
   return "";
@@ -1762,6 +1764,26 @@ function exploreSeedQueries() {
   return seeds.slice(0, 3);
 }
 
+// Explorar tira de las plataformas de referencia usando el historial del usuario:
+// artistas afines en Deezer, similares en Last.fm y catalogo de iTunes.
+async function fetchHistoryCrossPlatform(rotation, limit = 8) {
+  if (!metadataCatalogsEnabled()) return [];
+  const artists = rotateItems(historyArtists(8), rotation).slice(0, 2);
+  const lastSearch = pickRotating(readStoredList(SEARCH_KEY), rotation);
+  const tasks = [];
+
+  artists.forEach((artist) => {
+    tasks.push(fetchDeezerRelatedSeeds(artist, 10).catch(() => []));
+    tasks.push(fetchLastfmSimilarSeeds(artist, "", 12).catch(() => []));
+    tasks.push(fetchItunesSeeds(artist, 10).catch(() => []));
+  });
+  if (lastSearch) tasks.push(fetchDeezerSeeds(lastSearch, 10).catch(() => []));
+  if (!tasks.length) return [];
+
+  const buckets = await Promise.all(tasks);
+  return resolveSeedsToPlayable(rotateItems(uniqueSeeds(interleave(...buckets)), rotation), limit);
+}
+
 // La rotacion se guarda: al volver a entrar el descubrimiento no arranca igual.
 function loadDiscoverRotation() {
   try {
@@ -1864,15 +1886,16 @@ async function loadDiscovery({ force = false } = {}) {
   try {
     // Fase 1: fuentes rapidas, se pinta en cuanto contestan.
     // "official music video" evita que YouTube devuelva solo recopilatorios de una hora.
-    const [results, freeTracks, trending, stations] = await Promise.all([
+    const [results, freeTracks, openverse, trending, stations] = await Promise.all([
       withTimeout(fetchYouTubeResults(`${query} official music video`), 20000, []),
       freeCatalogsEnabled() ? withTimeout(fetchJamendoByTag(seedTerm, 12), 10000, []) : [],
+      freeCatalogsEnabled() ? withTimeout(fetchOpenverseResults(seedTerm, 8), 10000, []) : [],
       freeCatalogsEnabled() ? withTimeout(fetchAudiusTrending(audiusGenreFor(moodGenre || seedTerm), 12), 10000, []) : [],
       withTimeout(fetchLiveRadioStations({ tag: radioTag, limit: 3 }), 8000, [])
     ]);
     if (requestId !== state.discoverRequestId) return;
 
-    const basePool = interleave(results, freeTracks, trending).concat(stations, fallback);
+    const basePool = interleave(results, freeTracks, openverse, trending).concat(stations, fallback);
     finalizeDiscovery(basePool, rotation, alreadyShown);
 
     // Fase 2: catalogo cruzado (Deezer/Last.fm/iTunes) resuelto a fuentes reproducibles.
@@ -1887,13 +1910,16 @@ async function loadDiscovery({ force = false } = {}) {
     // Las semillas rotan antes de resolverse: sin esto siempre salian las mismas.
     const crossPlatform = await withTimeout(
       resolveSeedsToPlayable(rotateItems(uniqueSeeds(interleave(chartSeeds, tagSeeds, itunesSeeds)), rotation), 8),
-      15000,
+      25000,
       []
     );
     if (requestId !== state.discoverRequestId) return;
 
     const explore = state.view === "explore"
-      ? (await Promise.all(exploreSeedQueries().map((q) => withTimeout(fetchMixedResults(q), 10000, [])))).flat()
+      ? (await Promise.all([
+        ...exploreSeedQueries().map((q) => withTimeout(fetchMixedResults(q), 10000, [])),
+        withTimeout(fetchHistoryCrossPlatform(rotation, 8), 25000, [])
+      ])).flat()
       : [];
     if (requestId !== state.discoverRequestId) return;
 
@@ -1905,7 +1931,7 @@ async function loadDiscovery({ force = false } = {}) {
     if (!crossPlatform.length && !explore.length && !seeded.length && !moreResults.length) return;
 
     finalizeDiscovery(
-      interleave(results, crossPlatform, moreResults, freeTracks, trending, explore).concat(seeded, stations, fallback),
+      interleave(results, crossPlatform, moreResults, freeTracks, openverse, trending, explore).concat(seeded, stations, fallback),
       rotation,
       alreadyShown
     );
@@ -2859,7 +2885,12 @@ function rankSearchResults(query, { youtube = [], free = [], resolved = [], stat
 
   const relevantFree = free.filter((item) => queryMatchScore(query, item) >= 0.6);
   const relevantResolved = resolved.filter((item) => queryMatchScore(query, item) >= 0.5);
-  const head = interleave(strongYoutube.slice(0, 12), relevantFree.slice(0, 6), relevantResolved.slice(0, 6));
+  // Las coincidencias fuertes de YouTube abren la lista (es lo que se buscaba);
+  // detras se intercalan las demas plataformas para que no quede todo igual.
+  const head = [
+    ...strongYoutube.slice(0, 4),
+    ...interleave(relevantResolved.slice(0, 6), strongYoutube.slice(4, 12), relevantFree.slice(0, 6))
+  ];
   const pool = [...head, ...strongYoutube.slice(12), ...relevantFree.slice(6), ...relevantResolved.slice(6), ...weakYoutube, ...stations];
 
   const diverse = pickDiverseTracks(pool, { max: 40 });
@@ -2872,10 +2903,22 @@ function rankSearchResults(query, { youtube = [], free = [], resolved = [], stat
   return uniqueItems([...diverse, ...variants]).slice(0, 24);
 }
 
+// Cuando una sugerencia de Deezer/iTunes/Last.fm coincide con una pista que ya
+// estaba en la lista, se conserva su procedencia para que se vea de donde salio.
+function annotateSeedOrigins(items, resolved) {
+  if (!resolved?.length) return items;
+  return items.map((item) => {
+    if (item.seedOrigin) return item;
+    const match = resolved.find((r) => r.id === item.id || tokensAreNearDuplicate(trackTokens(r), trackTokens(item)));
+    return match?.seedOrigin ? { ...item, seedOrigin: match.seedOrigin } : item;
+  });
+}
+
 async function searchOnline() {
   const query = refs.onlineQuery.value.trim();
   if (!query) return;
 
+  const searchId = ++state.searchRequestId;
   const qState = onlineQueueState();
   qState.searchSeed = query;
   qState.growthCycle = 0;
@@ -2884,40 +2927,64 @@ async function searchOnline() {
   refs.onlineSearchBtn.disabled = true;
   refs.onlineSearchBtn.textContent = "Buscando...";
 
+  const describeSources = (results, extraNote) => {
+    const sources = Array.from(new Set(results.map((item) => providerLabel(item)).filter(Boolean)));
+    const origins = Array.from(new Set(results.map((item) => seedOriginLabel(item)).filter(Boolean)));
+    updateOnlineHint(`Resultados de ${sources.join(" + ") || "YouTube"}`
+      + (origins.length ? ` (sugeridos por ${origins.join(" + ")})` : "")
+      + (extraNote || "")
+      + (jamendoClientId() ? "" : ". Agrega jamendoClientId en config.js para incluir Jamendo directo."));
+  };
+
+  const showResults = (results) => {
+    state.library[state.mode].online = results;
+    setResultsVisible(true);
+    renderLibrary(results);
+  };
+
   try {
-    const [youtube, free, seedsItunes, seedsDeezer, stations] = await Promise.all([
+    const [youtube, free, seedsItunes, seedsDeezer, seedsLastfm, stations] = await Promise.all([
       fetchYouTubeResults(query).catch(() => []),
       fetchFreeCatalogResults(query).catch(() => []),
       fetchItunesSeeds(query, 10).catch(() => []),
       fetchDeezerSeeds(query, 10).catch(() => []),
-      /\bradio\b|\bfm\b|\bam\b/i.test(query)
-        ? fetchLiveRadioStations({ name: query.replace(/\bradio\b/i, "").trim() || query, limit: 8 }).catch(() => [])
-        : Promise.resolve([])
+      fetchLastfmSearchSeeds(query, 10).catch(() => []),
+      fetchLiveRadioStations({ name: query.replace(/\bradio\b/i, "").trim() || query, limit: 3 }).catch(() => [])
     ]);
+    if (searchId !== state.searchRequestId) return;
 
-    // Solo se resuelven semillas cuando YouTube deja poco material util.
-    const needsBackfill = youtube.filter((item) => queryMatchScore(query, item) >= 0.5).length < 8;
-    const resolved = needsBackfill
-      ? await withTimeout(resolveSeedsToPlayable(interleave(seedsItunes, seedsDeezer), 6), 12000, [])
-      : [];
-
-    const results = rankSearchResults(query, { youtube, free, resolved, stations });
-    if (!results.length) {
+    const base = rankSearchResults(query, { youtube, free, resolved: [], stations });
+    if (!base.length) {
       throw new Error("Empty search results");
     }
-    state.library[state.mode].online = results;
-    setResultsVisible(true);
-    renderLibrary(results);
+    showResults(base);
     refs.resultsSection?.scrollIntoView({ block: "start" });
+    describeSources(base, ". Buscando en Deezer/iTunes/Last.fm...");
+    refs.onlineSearchBtn.disabled = false;
+    refs.onlineSearchBtn.textContent = "Buscar";
 
-    const extras = [];
-    if (free.some((item) => results.includes(item))) extras.push("catalogos libres");
-    if (resolved.length) extras.push("Deezer/iTunes resueltos");
-    if (stations.length) extras.push("radios en vivo");
-    updateOnlineHint(extras.length
-      ? `Resultados de YouTube + ${extras.join(" + ")}.`
-      : "Resultados ordenados por coincidencia con tu busqueda.");
+    // Segunda pasada: las plataformas de referencia tardan mas porque cada
+    // sugerencia hay que resolverla a una fuente reproducible.
+    const strongYoutube = youtube.filter((item) => queryMatchScore(query, item) >= 0.5).length;
+    const resolved = await withTimeout(
+      resolveSeedsToPlayable(interleave(seedsItunes, seedsDeezer, seedsLastfm), strongYoutube < 8 ? 8 : 5),
+      30000,
+      []
+    );
+    if (searchId !== state.searchRequestId) return;
+
+    if (!resolved.length) {
+      describeSources(base);
+      return;
+    }
+
+    const merged = annotateSeedOrigins(rankSearchResults(query, { youtube, free, resolved, stations }), resolved);
+    showResults(merged.length ? merged : base);
+    describeSources(merged.length ? merged : base);
   } catch (err) {
+    if (searchId !== state.searchRequestId) return;
+
+
 
     const fallback = searchFallbackCatalog(query);
     state.library[state.mode].online = fallback;
@@ -3063,13 +3130,48 @@ async function fetchJamendoByTag(tag, limit = 20) {
   return fetchJamendoJson("/tracks/", { limit: String(limit), fuzzytags: tag, groupby: "artist_id", boost: "popularity_month" });
 }
 
+// Openverse agrega catalogo libre reproducible (Jamendo, ccMixter, FMA) sin pedir clave,
+// asi que funciona aunque no haya jamendoClientId configurado.
+const OPENVERSE_API = "https://api.openverse.org/v1/audio/";
+
+function mapOpenverseTrack(track) {
+  const url = track?.url || track?.alt_files?.[0]?.url;
+  if (!track?.id || !url) return null;
+  const artist = normalizeText(track.creator || "Openverse");
+  return {
+    id: `openverse-${track.id}`,
+    provider: "openverse",
+    kind: "stream",
+    providerTrackId: String(track.id),
+    url,
+    title: normalizeText(track.title || "Sin titulo"),
+    subtitle: `${artist} - ${formatTime(Math.round(Number(track.duration || 0) / 1000))}`,
+    thumbnail: track.thumbnail || "",
+    genre: normalizeText(track.genres?.[0] || track.tags?.[0]?.name || "")
+  };
+}
+
+async function fetchOpenverseResults(query, limit = 12) {
+  if (!freeCatalogsEnabled() || !normalizeText(query)) return [];
+  const params = new URLSearchParams({
+    q: normalizeText(query),
+    page_size: String(limit),
+    category: "music"
+  });
+  const res = await fetch(`${OPENVERSE_API}?${params.toString()}`, { mode: "cors" });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (Array.isArray(data?.results) ? data.results : []).map(mapOpenverseTrack).filter(Boolean);
+}
+
 async function fetchFreeCatalogResults(query, limit = 16) {
   if (!freeCatalogsEnabled() || !normalizeText(query)) return [];
-  const [audius, jamendo] = await Promise.all([
+  const [audius, jamendo, openverse] = await Promise.all([
     fetchAudiusResults(query, limit).catch(() => []),
-    fetchJamendoResults(query, limit).catch(() => [])
+    fetchJamendoResults(query, limit).catch(() => []),
+    fetchOpenverseResults(query, limit).catch(() => [])
   ]);
-  return interleave(audius, jamendo);
+  return interleave(audius, jamendo, openverse);
 }
 
 function interleave(...lists) {
@@ -3095,7 +3197,7 @@ const ITUNES_API = "https://itunes.apple.com";
 const DEEZER_API = "https://api.deezer.com";
 const LASTFM_API = "https://ws.audioscrobbler.com/2.0/";
 const RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json";
-const SEED_RESOLVE_CONCURRENCY = 4;
+const SEED_RESOLVE_CONCURRENCY = 6;
 
 function metadataCatalogsEnabled() {
   return appConfig.useMetadataCatalogs !== false && state.mode === "music";
@@ -3288,6 +3390,17 @@ async function fetchLastfmTagSeeds(tag, limit = 20) {
     .filter(Boolean);
 }
 
+async function fetchLastfmSearchSeeds(query, limit = 12) {
+  const key = lastfmApiKey();
+  if (!key || !metadataCatalogsEnabled() || !normalizeText(query)) return [];
+  const params = new URLSearchParams({ method: "track.search", api_key: key, format: "json", limit: String(limit), track: query });
+  const data = await fetchJsonMaybeProxied(`${LASTFM_API}?${params.toString()}`);
+  const rows = data?.results?.trackmatches?.track || [];
+  return (Array.isArray(rows) ? rows : [rows])
+    .map((row) => makeSeed(row?.name, row?.artist, { origin: "lastfm" }))
+    .filter(Boolean);
+}
+
 function mapRadioStation(station) {
   const url = String(station?.url_resolved || station?.url || "");
   // Un stream http en una pagina https lo bloquea el navegador (mixed content).
@@ -3343,12 +3456,13 @@ async function resolveSeedToPlayable(seed) {
   if (cached !== null && cached !== undefined) return cached ? { ...cached } : null;
 
   const query = normalizeText(`${seed.seedArtist} ${seed.seedTitle}`);
-  const [free, youtube] = await Promise.all([
+  const [audius, openverse, youtube] = await Promise.all([
     freeCatalogsEnabled() ? fetchAudiusResults(query, 6).catch(() => []) : Promise.resolve([]),
+    freeCatalogsEnabled() ? fetchOpenverseResults(query, 6).catch(() => []) : Promise.resolve([]),
     fetchYouTubeResults(query).catch(() => [])
   ]);
 
-  const match = [...free, ...youtube].find((candidate) => seedMatchesItem(seed, candidate)) || null;
+  const match = [...audius, ...openverse, ...youtube].find((candidate) => seedMatchesItem(seed, candidate)) || null;
   const resolved = match
     ? {
       ...match,
@@ -3366,7 +3480,7 @@ async function resolveSeedToPlayable(seed) {
 // Se resuelve por tandas y se corta al llegar al cupo: cada semilla cuesta una
 // busqueda real, asi que no se resuelve el catalogo entero.
 async function resolveSeedsToPlayable(seeds, limit = 8) {
-  const list = uniqueSeeds(seeds).slice(0, Math.max(0, limit) * 2);
+  const list = uniqueSeeds(seeds).slice(0, Math.max(0, limit) + 3);
   if (!list.length) return [];
 
   const out = [];
@@ -4681,7 +4795,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=39", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=40", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
