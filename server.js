@@ -157,16 +157,20 @@ app.get("/api/recommend", async (req, res) => {
       buckets.push(details.related_videos);
     }
 
-    // Nunca se busca el titulo exacto: devolveria la misma cancion repetida.
+    // Las recomendaciones se anclan al artista de la pista elegida. Las consultas
+    // genericas por genero devuelven mixes desconectados de la seleccion.
     const searchQueries = [];
     if (seedAuthor) {
       searchQueries.push(`artists similar to ${seedAuthor}`);
       searchQueries.push(`${seedAuthor} ${genre} songs`);
+      searchQueries.push(`${seedAuthor} similar songs`);
     }
-    searchQueries.push(`${genre} music mix`);
-    searchQueries.push(`${genre} songs playlist`);
-    if (seedHint && seedAuthor && !seedHint.toLowerCase().includes(seedAuthor.toLowerCase())) {
-      searchQueries.push(`${seedHint} ${genre} playlist`);
+    if (!seedAuthor && seedHint) {
+      searchQueries.push(`${seedHint} similar songs`);
+      searchQueries.push(`${seedHint} ${genre} songs`);
+    }
+    if (!searchQueries.length) {
+      searchQueries.push(`${genre} songs`);
     }
 
     for (const q of searchQueries) {

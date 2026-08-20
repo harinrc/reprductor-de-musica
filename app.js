@@ -2068,10 +2068,10 @@ function buildOnlineQueue(seed, candidates) {
     .map((x) => ({ item: x, score: onlineSimilarityScore(seed, x) }))
     .sort((a, b) => b.score - a.score);
 
-  const strong = scored.filter((x) => x.score >= 2).map((x) => x.item);
+  const strong = scored.filter((x) => x.score >= 3).map((x) => x.item);
   if (strong.length) return [seed, ...strong.slice(0, 24)];
 
-  const medium = scored.filter((x) => x.score >= 1).map((x) => x.item);
+  const medium = scored.filter((x) => x.score >= 2).map((x) => x.item);
   if (medium.length) return [seed, ...medium.slice(0, 24)];
 
   return [seed];
@@ -2084,12 +2084,8 @@ async function startSmartPlayback(item, sourceItems = null) {
   if (onlineRadio) {
     const qState = onlineQueueState();
     const seedSig = trackSignature(item);
-    qState.results = pickDiverseTracks(base.length ? [...base] : [item], {
-      max: 80,
-      blockedSignatures: new Set(seedSig ? [seedSig] : []),
-      blockedIds: new Set(item.id ? [item.id] : [])
-    });
-    qState.related = buildOnlineQueue(item, qState.results);
+    qState.results = uniqueItems(base.length ? [...base] : [item]);
+    qState.related = [item];
     qState.loading = false;
     qState.playedIds = [item.id];
     qState.playedSignatures = seedSig ? [seedSig] : [];
@@ -2102,7 +2098,7 @@ async function startSmartPlayback(item, sourceItems = null) {
     qState.view = "related";
     qState.reseedSeedId = item.id || "";
     qState.reseeding = false;
-    state.queue[state.mode][state.source] = qState.related.length ? qState.related : [item];
+    state.queue[state.mode][state.source] = [item];
   } else {
     const queue = buildSmartQueue(item, base);
     state.queue[state.mode][state.source] = queue.length ? queue : [item];
@@ -2117,7 +2113,7 @@ async function startSmartPlayback(item, sourceItems = null) {
     const rec = await fetchRelatedForItem(item);
     if (rec.length) {
       const existing = new Set(nowQueue().map((x) => x.id));
-      const fresh = rec.filter((r) => !existing.has(r.id));
+      const fresh = rec.filter((r) => !existing.has(r.id) && onlineSimilarityScore(item, r) >= 2);
       if (onlineRadio) {
         const qState = onlineQueueState();
         const signatures = new Set();
