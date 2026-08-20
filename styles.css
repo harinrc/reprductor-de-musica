@@ -350,6 +350,17 @@ body {
   background: transparent;
 }
 
+#queueList .track-item {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#queueList .track-item.is-reordering {
+  background: rgba(var(--aura-rgb), 0.16);
+  box-shadow: inset 3px 0 0 rgb(var(--aura-rgb));
+  border-radius: 10px;
+}
+
 .track-head {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);

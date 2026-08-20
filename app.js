@@ -41,6 +41,7 @@ const state = {
   discoverRotation: 0,
   discoverShownIds: [],
   discoverLoading: false,
+  queueReorderId: "",
   discoverCache: {
     music: { online: [], local: [] },
     video: { online: [], local: [] }
@@ -1452,7 +1453,8 @@ function renderLibrary(items = null) {
       </div>
       <div class="actions">
         <button class="ghost" data-action="play" data-id="${item.id}" aria-label="Reproducir" title="Reproducir">▶</button>
-        <button class="ghost" data-action="add" data-id="${item.id}" aria-label="Agregar a cola" title="Agregar a cola">＋</button>
+        <button class="ghost" data-action="next" data-id="${item.id}" aria-label="Reproducir a continuacion" title="Reproducir a continuacion">⏭</button>
+        <button class="ghost" data-action="add" data-id="${item.id}" aria-label="Agregar a cola" title="Agregar al final de la cola">＋</button>
       </div>
     `;
     refs.libraryList.appendChild(li);
@@ -1475,6 +1477,10 @@ function renderQueue() {
   queue.forEach((item, i) => {
     const li = document.createElement("li");
     li.className = "track-item";
+    li.dataset.pos = String(i);
+    li.dataset.id = item.id;
+    const reordering = state.queueReorderId === item.id;
+    if (reordering) li.classList.add("is-reordering");
     const activeInRelated = nowQueue()[idx]?.id === item.id;
     const activeInResults = state.current?.id === item.id;
     if (activeInRelated || activeInResults) {
@@ -1483,6 +1489,13 @@ function renderQueue() {
     const thumb = item.thumbnail
       ? `<img class="thumb" src="${escapeHtml(item.thumbnail)}" alt="portada" loading="lazy" />`
       : `<div class="thumb placeholder">${state.mode === "music" ? "MUS" : "VID"}</div>`;
+    const actions = reordering
+      ? `<button class="ghost" data-action="moveUp" data-pos="${i}" aria-label="Subir" title="Subir">▲</button>
+        <button class="ghost" data-action="moveDown" data-pos="${i}" aria-label="Bajar" title="Bajar">▼</button>
+        <button class="ghost" data-action="playNext" data-pos="${i}" aria-label="Poner en el turno" title="Poner en el turno">⏭</button>
+        <button class="ghost" data-action="doneOrder" data-pos="${i}" aria-label="Listo" title="Listo">✓</button>`
+      : `<button class="ghost" data-action="jump" data-pos="${i}" aria-label="Ir a esta pista" title="Ir">⏵</button>
+        <button class="ghost" data-action="remove" data-pos="${i}" aria-label="Quitar" title="Quitar">✕</button>`;
     li.innerHTML = `
       <div class="track-head">
         ${thumb}
@@ -1492,8 +1505,7 @@ function renderQueue() {
         </div>
       </div>
       <div class="actions">
-        <button class="ghost" data-action="jump" data-pos="${i}" aria-label="Ir a esta pista" title="Ir">⏵</button>
-        <button class="ghost" data-action="remove" data-pos="${i}" aria-label="Quitar" title="Quitar">✕</button>
+        ${actions}
       </div>
     `;
     refs.queueList.appendChild(li);
@@ -2286,6 +2298,56 @@ function findInLibraryById(id) {
 function enqueue(item) {
   nowQueue().push(item);
   renderQueue();
+}
+
+function syncQueueReference(queue) {
+  state.queue[state.mode][state.source] = queue;
+  if (isOnlineQueueMode()) onlineQueueState().related = queue;
+}
+
+function syncNowIndexToCurrent() {
+  const activeIndex = nowQueue().findIndex((x) => x.id === state.current?.id);
+  if (activeIndex >= 0) setNowIndex(activeIndex);
+}
+
+// Coloca la pista justo despues de la que suena, sin duplicarla en la cola.
+function playNextInQueue(item) {
+  if (!item?.id) return;
+  const queue = nowQueue();
+  const currentIndex = queue.findIndex((x) => x.id === state.current?.id);
+
+  const duplicate = queue.findIndex((x) => x.id === item.id);
+  if (duplicate >= 0 && duplicate !== currentIndex) queue.splice(duplicate, 1);
+
+  const anchor = queue.findIndex((x) => x.id === state.current?.id);
+  const target = clamp((anchor >= 0 ? anchor : nowIndex()) + 1, 0, queue.length);
+  queue.splice(target, 0, item);
+
+  syncQueueReference(queue);
+  syncNowIndexToCurrent();
+  renderQueue();
+  updateOnlineHint(`"${item.title}" suena a continuacion.`);
+}
+
+function canReorderQueue() {
+  return !isOnlineQueueMode() || getActiveQueueView() === "related";
+}
+
+function moveQueueItemToIndex(id, target) {
+  if (!canReorderQueue()) return false;
+  const queue = nowQueue();
+  const from = queue.findIndex((x) => x.id === id);
+  if (from < 0) return false;
+
+  const to = clamp(target, 0, queue.length - 1);
+  if (to === from) return false;
+
+  const [moved] = queue.splice(from, 1);
+  queue.splice(to, 0, moved);
+  syncQueueReference(queue);
+  syncNowIndexToCurrent();
+  renderQueue();
+  return true;
 }
 
 function playItem(item, queuePosition = null) {
@@ -4158,6 +4220,76 @@ function setMediaActionHandlers() {
   } catch (_) {}
 }
 
+// Mantener presionada una pista de la cola activa el modo orden: se puede arrastrar
+// para cambiarla de turno o usar las flechas.
+const queueDrag = { pointerId: null, id: "", timer: 0, active: false, startY: 0 };
+
+function cancelQueueLongPress() {
+  if (queueDrag.timer) window.clearTimeout(queueDrag.timer);
+  queueDrag.timer = 0;
+}
+
+function endQueueDrag() {
+  cancelQueueLongPress();
+  queueDrag.pointerId = null;
+  queueDrag.id = "";
+  queueDrag.active = false;
+  if (refs.queueList) refs.queueList.style.touchAction = "";
+}
+
+function bindQueueReorder() {
+  const list = refs.queueList;
+  if (!list) return;
+
+  list.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;
+    const li = e.target.closest(".track-item");
+    const id = li?.dataset?.id;
+    if (!id || !canReorderQueue()) return;
+
+    cancelQueueLongPress();
+    queueDrag.pointerId = e.pointerId;
+    queueDrag.id = id;
+    queueDrag.startY = e.clientY;
+    queueDrag.active = false;
+    queueDrag.timer = window.setTimeout(() => {
+      queueDrag.active = true;
+      state.queueReorderId = id;
+      list.style.touchAction = "none";
+      if (navigator.vibrate) navigator.vibrate(15);
+      renderQueue();
+      updateOnlineHint("Modo orden: arrastra la pista o usa las flechas.");
+    }, 450);
+  });
+
+  // Los eventos de movimiento van en window: la lista se vuelve a pintar mientras se
+  // arrastra y el elemento bajo el dedo desaparece.
+  window.addEventListener("pointermove", (e) => {
+    if (queueDrag.pointerId !== e.pointerId) return;
+
+    if (!queueDrag.active) {
+      // Si el dedo se desplaza antes de tiempo es un scroll, no una pulsacion larga.
+      if (Math.abs(e.clientY - queueDrag.startY) > 10) cancelQueueLongPress();
+      return;
+    }
+
+    e.preventDefault();
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".track-item");
+    if (!over || !list.contains(over)) return;
+    const target = Number(over.dataset.pos);
+    if (!Number.isFinite(target)) return;
+    moveQueueItemToIndex(queueDrag.id, target);
+  }, { passive: false });
+
+  const stopDrag = (e) => {
+    if (queueDrag.pointerId !== null && e.pointerId !== queueDrag.pointerId) return;
+    endQueueDrag();
+  };
+
+  window.addEventListener("pointerup", stopDrag);
+  window.addEventListener("pointercancel", stopDrag);
+}
+
 function bindEvents() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", (event) => {
@@ -4241,11 +4373,21 @@ function bindEvents() {
       startSmartPlayback(item, renderedLibraryItems);
     }
 
+    if (action === "next") {
+      if (!state.current) {
+        startSmartPlayback(item, renderedLibraryItems);
+        return;
+      }
+      playNextInQueue(item);
+    }
+
     if (action === "add") {
       enqueue(item);
       renderQueue();
     }
   });
+
+  bindQueueReorder();
 
   refs.queueList.addEventListener("click", (e) => {
     const btn = e.target.closest("button");
@@ -4258,6 +4400,24 @@ function bindEvents() {
 
     const item = queue[pos];
     if (!item) return;
+
+    if (action === "moveUp" || action === "moveDown") {
+      moveQueueItemToIndex(item.id, pos + (action === "moveUp" ? -1 : 1));
+      return;
+    }
+
+    if (action === "playNext") {
+      playNextInQueue(item);
+      state.queueReorderId = "";
+      renderQueue();
+      return;
+    }
+
+    if (action === "doneOrder") {
+      state.queueReorderId = "";
+      renderQueue();
+      return;
+    }
 
     if (action === "jump") {
       if (isOnlineQueueMode() && getActiveQueueView() === "results") {
@@ -4795,7 +4955,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=40", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=41", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
