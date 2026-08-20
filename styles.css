@@ -434,6 +434,22 @@ body {
   background: #7be0ff;
 }
 
+.source-radio {
+  background: #ffb347;
+}
+
+.source-deezer {
+  background: #ff6ea9;
+}
+
+.source-itunes {
+  background: #d8b4ff;
+}
+
+.source-lastfm {
+  background: #ff8f8f;
+}
+
 .track-item .sub {
   color: var(--ink-soft);
   font-size: 0.82rem;

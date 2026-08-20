@@ -9,6 +9,25 @@ App web para reproducir Musica y Videos en modo separado:
 - Media Session API para controles en segundo plano (play/pause/next/prev/seek) en navegadores compatibles.
 - PWA basica para experiencia tipo app.
 
+## Fuentes de musica
+
+La app no depende solo de YouTube. Se combinan dos tipos de fuente:
+
+- **Reproducibles**: YouTube, Audius, Jamendo y radios en vivo (radio-browser.info).
+- **De referencia** (dicen que canciones existen y cuales se parecen): Deezer, iTunes y Last.fm.
+  Cada sugerencia de estas plataformas se resuelve a una fuente reproducible antes de mostrarse.
+  Spotify no se puede usar desde el navegador: exige OAuth de servidor y no permite streaming sin su SDK.
+
+En [config.js](config.js):
+
+- `jamendoClientId`: catalogo libre de Jamendo (gratis en devportal.jamendo.com).
+- `lastfmApiKey`: mejora mucho las recomendaciones "canciones similares" (gratis en last.fm/api).
+- `useMetadataCatalogs`: activa Deezer/iTunes/Last.fm como catalogo de referencia.
+- `useLiveRadio`: activa las emisoras en vivo (solo streams https).
+
+El boton **Actualizar** de Descubrir trae recomendaciones nuevas; ademas rota solo cada 2 minutos
+y no repite lo ya mostrado en los ultimos refrescos.
+
 ## Importante sobre YouTube
 
 Para que funcione estable en GitHub Pages para todos los usuarios, el dueno del repositorio configura una vez una API key en GitHub Secrets.

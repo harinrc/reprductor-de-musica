@@ -37,6 +37,9 @@ const state = {
   selectedMood: "Energia",
   discoverSeed: Math.floor(Math.random() * 100000),
   discoverRequestId: 0,
+  discoverRotation: 0,
+  discoverShownIds: [],
+  discoverLoading: false,
   discoverCache: {
     music: { online: [], local: [] },
     video: { online: [], local: [] }
@@ -55,6 +58,36 @@ const moodQueries = {
   Fiesta: "party hits 2026",
   Triste: "sad songs playlist",
   Romantica: "romantic songs playlist"
+};
+
+// Cada refresco de Descubrir toma una consulta distinta del pool: con una sola
+// consulta fija YouTube devolvia siempre el mismo punado de videos.
+// Se piden canciones (no "mix"/"set"), que luego se filtran como recopilatorios.
+const moodQueryPool = {
+  Energia: ["high energy songs", "workout songs", "gym motivation songs", "rock anthems", "hype rap songs", "power pop hits"],
+  Relax: ["chill songs", "acoustic chill songs", "indie chill songs", "slow rnb songs", "ambient guitar songs", "bossa nova songs"],
+  Concentracion: ["focus instrumental songs", "study beats", "piano study songs", "minimal techno tracks", "cinematic instrumental tracks", "jazz cafe instrumental"],
+  Fiesta: ["party hits", "reggaeton hits", "latin club hits", "dance floor hits", "afrobeats hits", "throwback party classics"],
+  Triste: ["sad songs", "emotional ballads", "heartbreak indie songs", "melancholic piano songs", "sad rnb songs", "acoustic sad covers"],
+  Romantica: ["romantic songs", "love songs classics", "baladas romanticas", "rnb love songs", "acoustic love duets", "slow dance songs"]
+};
+
+const moodRadioTags = {
+  Energia: "dance",
+  Relax: "chillout",
+  Concentracion: "ambient",
+  Fiesta: "latin",
+  Triste: "indie",
+  Romantica: "love songs"
+};
+
+const moodSeedTerms = {
+  Energia: ["edm", "rock", "hip hop"],
+  Relax: ["chillout", "acoustic", "lo-fi"],
+  Concentracion: ["instrumental", "classical", "ambient"],
+  Fiesta: ["reggaeton", "dance", "latin"],
+  Triste: ["ballad", "indie", "soul"],
+  Romantica: ["romantic", "r&b", "pop"]
 };
 
 const genreLexicon = {
@@ -122,13 +155,17 @@ const invidiousInstances = [
 const runtimeCache = {
   search: new Map(),
   recommendations: new Map(),
-  discovery: new Map()
+  metadata: new Map(),
+  resolve: new Map()
 };
 
 const RADIO_MAX_PER_ARTIST = 4;
 const SEARCH_CACHE_TTL = 10 * 60 * 1000;
 const RECOMMENDATION_CACHE_TTL = 20 * 60 * 1000;
-const DISCOVERY_CACHE_TTL = 4 * 60 * 1000;
+const METADATA_CACHE_TTL = 30 * 60 * 1000;
+const RESOLVE_CACHE_TTL = 6 * 60 * 60 * 1000;
+const DISCOVER_ROTATION_KEY = "duo.discoverRotation";
+const DISCOVER_SHOWN_LIMIT = 60;
 
 const appConfig = window.DUO_CONFIG || {};
 let deferredInstallPrompt = null;
@@ -284,6 +321,33 @@ function artistIsSaturated(counts, item, max = RADIO_MAX_PER_ARTIST) {
   return (counts.get(artist) || 0) >= max;
 }
 
+// Un "mix" de dos horas no es una recomendacion: se descartan recopilatorios,
+// sets y videos larguisimos del descubrimiento y de la radio.
+// La duracion manda; en el titulo solo se miran marcas inequivocas ("mix" suelto
+// no vale: hay bandas como Little Mix).
+const NON_SONG_TITLE = /\b(megamix|full album|album completo|non ?stop|dj set|live set|compilation|radio show|podcast|karaoke|playlist|top \d{2,}|\d+\s*(hour|hours|horas)|24\/7)\b/i;
+
+function durationSecondsOf(item) {
+  const stamp = String(item?.subtitle || "").split(" - ").pop() || "";
+  const parts = stamp.trim().split(":").map((x) => Number(x));
+  if (!parts.length || parts.some((x) => !Number.isFinite(x))) return 0;
+  return parts.reduce((total, value) => (total * 60) + value, 0);
+}
+
+function looksLikeSong(item) {
+  if (!item) return false;
+  if (item.isLiveRadio) return true;
+  if (durationSecondsOf(item) > 900) return false;
+  if (item.kind !== "youtube") return true;
+  return !NON_SONG_TITLE.test(item.title || "");
+}
+
+// Si al filtrar queda muy poco, se devuelve la lista original antes que dejarla vacia.
+function preferSongs(items) {
+  const songs = (items || []).filter(looksLikeSong);
+  return songs.length >= Math.min(8, (items || []).length) ? songs : items || [];
+}
+
 function pickDiverseTracks(items, { max = 24, blockedSignatures = new Set(), blockedIds = new Set(), artistCounts = null, maxPerArtist = 0 } = {}) {
   const picked = [];
   const seenIds = new Set(blockedIds);
@@ -320,6 +384,7 @@ const refs = {
   discoverSection: document.getElementById("discoverSection"),
   discoverTitle: document.getElementById("discoverTitle"),
   discoverList: document.getElementById("discoverList"),
+  discoverRefreshBtn: document.getElementById("discoverRefreshBtn"),
   navHome: document.getElementById("navHome"),
   navExplore: document.getElementById("navExplore"),
   navLibrary: document.getElementById("navLibrary"),
@@ -465,6 +530,13 @@ function isRadioPlayable(item) {
   return item?.kind === "youtube" || item?.kind === "stream";
 }
 
+// Los rellenos de la radio tambien tienen que parecerse a lo que suena: sin este
+// filtro colaban pistas del descubrimiento que no tenian relacion alguna.
+function relatedToCurrent(items) {
+  if (!state.current) return items || [];
+  return (items || []).filter((item) => onlineSimilarityScore(state.current, item) >= 0);
+}
+
 function rememberOnlinePlayback(item) {
   if (!isOnlineQueueMode() || !isRadioPlayable(item) || !item?.id) return;
   const qState = onlineQueueState();
@@ -479,33 +551,44 @@ function rememberOnlinePlayback(item) {
 
 // Nunca se busca el titulo exacto de la pista actual: eso devuelve la misma cancion
 // una y otra vez. Las consultas giran alrededor del artista y del genero detectado.
-// Relacionadas segun el origen de la pista: YouTube, Jamendo o busqueda por artista.
+// Relacionadas por capas: fuente original -> similares reales (Last.fm/Deezer/iTunes)
+// -> catalogos libres del mismo artista -> mezcla por genero.
 async function fetchRelatedForItem(item) {
   if (!item) return [];
+  if (item.isLiveRadio) return [];
 
-  if (item.kind === "youtube" && item.youtubeId) {
-    return fetchRecommendationsSafe(item.youtubeId);
-  }
-
-  const artist = artistHint(item);
+  const artist = artistHint(item) || splitTitleArtist(item).artist;
   const genre = item.genre || genreLabel[Array.from(radioGenreProfile(item))[0]] || "";
   const tasks = [];
 
+  if (item.kind === "youtube" && item.youtubeId) {
+    tasks.push(fetchRecommendationsSafe(item.youtubeId).catch(() => []));
+  }
   if (item.provider === "jamendo" && item.providerTrackId) {
     tasks.push(fetchJamendoSimilar(item.providerTrackId, 20).catch(() => []));
   }
   if (item.provider === "audius" && genre) {
     tasks.push(fetchAudiusTrending(audiusGenreFor(genre) || genre, 20).catch(() => []));
   }
+
+  tasks.push(fetchCrossPlatformRelated(item, 10).catch(() => []));
+
   if (artist) {
-    tasks.push(fetchFreeCatalogResults(artist, 12).catch(() => []));
+    // Los resultados libres por artista se filtran: si no nombran al artista, fuera.
+    tasks.push(
+      fetchFreeCatalogResults(artist, 12)
+        .then((list) => list.filter((candidate) => queryMatchScore(artist, candidate) >= 0.6))
+        .catch(() => [])
+    );
     tasks.push(fetchYouTubeResults(`${artist} ${genre || "music"} mix`).catch(() => []));
   } else if (genre) {
     tasks.push(fetchMixedResults(`${genre} mix`).catch(() => []));
   }
 
   const buckets = await Promise.all(tasks);
-  return pickDiverseTracks(interleave(...buckets), {
+  const merged = preferSongs(interleave(...buckets).filter((candidate) => !candidate?.isLiveRadio));
+
+  return pickDiverseTracks(merged, {
     max: 30,
     blockedIds: new Set(item.id ? [item.id] : []),
     blockedSignatures: new Set([trackSignature(item)].filter(Boolean))
@@ -692,16 +775,18 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
           item: r,
           score: onlineSimilarityScore(state.current, r) + (onlineSimilarityScore(seed, r) * 0.7)
         }))
-        .sort((a, b) => b.score - a.score)
-        .map((x) => x.item);
+        .sort((a, b) => b.score - a.score);
 
       if (!ranked.length) continue;
 
       qState.seedTrail = [seed.id, ...qState.seedTrail.filter((id) => id !== seed.id)].slice(0, 18);
       qState.lastSeedId = seed.id;
 
-      for (const item of ranked) {
-        if (appended >= targetAppend) break;
+      // Sin afinidad no entra: la cola se rellena despues con las consultas por genero.
+      const candidates = ranked.map((x) => ({ item: x.item, strong: x.score >= 0 }));
+
+      for (const { item, strong } of candidates) {
+        if (appended >= targetAppend || !strong) break;
         if (existing.has(item.id) || played.has(item.id)) continue;
         if (guard.has(item)) continue;
         if (artistIsSaturated(artistCounts, item)) continue;
@@ -723,7 +808,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
 
     if (!appended) {
       const fromResults = pickDiverseTracks(
-        (qState.results || []).filter((r) => r?.id && !played.has(r.id)),
+        relatedToCurrent(qState.results || []).filter((r) => r?.id && !played.has(r.id)),
         {
           max: Math.max(6, minAhead),
           blockedSignatures: existingSignatures,
@@ -741,7 +826,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
 
     if (!appended) {
       const fromDiscover = pickDiverseTracks(
-        (state.discoverCache[state.mode]?.online || []).filter((r) => r?.id && !played.has(r.id)),
+        relatedToCurrent(state.discoverCache[state.mode]?.online || []).filter((r) => r?.id && !played.has(r.id)),
         {
           max: Math.max(6, minAhead),
           blockedSignatures: existingSignatures,
@@ -763,7 +848,7 @@ async function ensureOnlineQueueGrowth(minAhead = 5, minTotal = 40) {
       const query = hint ? `${hint} ${genre} mix` : `${genre} music mix`;
       const more = await fetchMixedResults(query).catch(() => []);
       const fallback = pickDiverseTracks(
-        more.filter((r) => r?.id && !played.has(r.id)),
+        relatedToCurrent(more).filter((r) => r?.id && !played.has(r.id)),
         {
           max: Math.max(8, minAhead),
           blockedSignatures: existingSignatures,
@@ -1125,14 +1210,24 @@ function providerLabel(item) {
   if (item.kind === "local") return "Local";
   if (item.provider === "audius") return "Audius";
   if (item.provider === "jamendo") return "Jamendo";
+  if (item.provider === "radio") return "Radio";
   if (item.kind === "youtube") return "YouTube";
   return "";
 }
 
+// Origen del descubrimiento (Deezer/iTunes/Last.fm) aunque el audio venga de otra fuente.
+function seedOriginLabel(item) {
+  const map = { deezer: "Deezer", itunes: "iTunes", lastfm: "Last.fm" };
+  return map[String(item?.seedOrigin || "").toLowerCase()] || "";
+}
+
 function providerTag(item) {
   const label = providerLabel(item);
-  if (!label) return "";
-  return `<span class="source-tag source-${label.toLowerCase()}">${label}</span>`;
+  const origin = seedOriginLabel(item);
+  const tags = [];
+  if (label) tags.push(`<span class="source-tag source-${label.toLowerCase().replace(/\./g, "")}">${label}</span>`);
+  if (origin) tags.push(`<span class="source-tag source-${origin.toLowerCase().replace(/\./g, "")}">${origin}</span>`);
+  return tags.join("");
 }
 
 const HISTORY_KEY = "duo.history";
@@ -1656,72 +1751,171 @@ function renderDiscovery(items) {
 // En Explorar las sugerencias se amplian con lo que el usuario ya escucho o busco.
 function exploreSeedQueries() {
   const genre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "";
+  const rotation = state.discoverRotation;
   const seeds = [];
-  historyArtists(2).forEach((artist) => seeds.push(genre ? `${artist} ${genre} mix` : `${artist} mix`));
-  const lastSearch = readStoredList(SEARCH_KEY)[0];
+  rotateItems(historyArtists(6), rotation).slice(0, 2).forEach((artist) => {
+    seeds.push(genre ? `${artist} ${genre} mix` : `${artist} mix`);
+  });
+  const searches = readStoredList(SEARCH_KEY);
+  const lastSearch = pickRotating(searches, rotation);
   if (lastSearch) seeds.push(`${lastSearch} similar`);
   return seeds.slice(0, 3);
 }
 
-async function loadDiscovery() {
+// La rotacion se guarda: al volver a entrar el descubrimiento no arranca igual.
+function loadDiscoverRotation() {
+  try {
+    const stored = Number(localStorage.getItem(DISCOVER_ROTATION_KEY) || 0);
+    return Number.isFinite(stored) ? stored : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function saveDiscoverRotation(value) {
+  try {
+    localStorage.setItem(DISCOVER_ROTATION_KEY, String(value));
+  } catch (_) {
+    // Ignore storage failures.
+  }
+}
+
+function pickRotating(list, offset) {
+  if (!Array.isArray(list) || !list.length) return "";
+  const index = ((offset % list.length) + list.length) % list.length;
+  return list[index];
+}
+
+function discoverQueriesForMood(mood, rotation) {
+  const pool = moodQueryPool[mood] || [moodQueries[mood] || "top music"];
+  return [pickRotating(pool, rotation), pickRotating(pool, rotation + 3)].filter(Boolean);
+}
+
+function rememberDiscoverShown(items) {
+  const ids = items.map((item) => item?.id).filter(Boolean);
+  state.discoverShownIds = Array.from(new Set([...ids, ...state.discoverShownIds])).slice(0, DISCOVER_SHOWN_LIMIT);
+}
+
+// Ninguna fuente externa puede colgar el descubrimiento: pasado el limite se sigue.
+function withTimeout(promise, ms, fallbackValue) {
+  return Promise.race([
+    Promise.resolve(promise).catch(() => fallbackValue),
+    new Promise((resolve) => setTimeout(() => resolve(fallbackValue), ms))
+  ]);
+}
+
+// Se prefiere lo que no se mostro en refrescos previos; si no alcanza, se rellena.
+function finalizeDiscovery(pool, rotation, blockedIds) {
+  const songs = preferSongs(pool);
+  let combined = pickDiverseTracks(songs, {
+    max: 30,
+    blockedIds: blockedIds || new Set(state.discoverShownIds),
+    maxPerArtist: 2
+  });
+  if (combined.length < 12) {
+    combined = pickDiverseTracks(songs, { max: 30, maxPerArtist: 2 });
+  }
+
+  const rotated = rotateItems(combined, state.discoverSeed + rotation);
+  state.discoverCache[state.mode].online = rotated;
+  rememberDiscoverShown(rotated);
+  renderDiscovery(rotated);
+  return rotated;
+}
+
+async function loadDiscovery({ force = false } = {}) {
   if (!refs.discoverSection) return;
+  if (state.discoverLoading && !force) return;
 
   const requestId = ++state.discoverRequestId;
-  const cacheKey = `${state.mode}|${state.source}|${state.selectedMood}|${state.view}`;
-  const cached = getCachedValue(runtimeCache.discovery, cacheKey, DISCOVERY_CACHE_TTL);
+  state.discoverRotation = (state.discoverRotation + 1) % 100000;
+  saveDiscoverRotation(state.discoverRotation);
+  const rotation = state.discoverRotation;
 
-  if (cached?.length) {
-    renderDiscovery(rotateItems(cached, state.discoverSeed + requestId));
+  // Cada refresco pide material distinto: antes el mismo lote cacheado volvia una y otra vez.
+  const previous = state.discoverCache[state.mode][state.source === "local" ? "local" : "online"] || [];
+  if (previous.length) {
+    renderDiscovery(rotateItems(previous, rotation));
   }
 
   if (state.source === "local") {
-    // El descubrir local solo muestra archivos propios, nunca catalogo online.
     const local = state.library[state.mode].local;
-    const combined = rotateItems(local, state.discoverSeed + requestId).slice(0, 24);
+    const combined = rotateItems(local, state.discoverSeed + rotation).slice(0, 24);
     state.discoverCache[state.mode].local = combined;
-    setCachedValue(runtimeCache.discovery, cacheKey, combined);
     if (requestId !== state.discoverRequestId) return;
     renderDiscovery(combined);
     return;
   }
 
-  const query = moodQueries[state.selectedMood] || "top music";
+  const fallback = getFallbackCatalogForMood(state.selectedMood);
+  if (!previous.length) {
+    // Algo visible desde el primer segundo mientras responden las APIs.
+    renderDiscovery(rotateItems(fallback, rotation).slice(0, 24));
+  }
+
+  const [query, altQuery] = discoverQueriesForMood(state.selectedMood, rotation);
   const moodGenre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "";
+  const seedTerm = pickRotating(moodSeedTerms[state.selectedMood] || ["pop"], rotation);
+  const radioTag = moodRadioTags[state.selectedMood] || "pop";
+
+  state.discoverLoading = true;
+  // Lo ya visto se congela aqui: la fase 2 no debe descartar lo que pinto la fase 1.
+  const alreadyShown = new Set(state.discoverShownIds);
   try {
-    const [results, freeTracks, trending] = await Promise.all([
-      fetchYouTubeResults(query),
-      fetchFreeCatalogResults(query, 12).catch(() => []),
-      freeCatalogsEnabled() ? fetchAudiusTrending(audiusGenreFor(moodGenre), 12).catch(() => []) : []
+    // Fase 1: fuentes rapidas, se pinta en cuanto contestan.
+    // "official music video" evita que YouTube devuelva solo recopilatorios de una hora.
+    const [results, freeTracks, trending, stations] = await Promise.all([
+      withTimeout(fetchYouTubeResults(`${query} official music video`), 20000, []),
+      freeCatalogsEnabled() ? withTimeout(fetchJamendoByTag(seedTerm, 12), 10000, []) : [],
+      freeCatalogsEnabled() ? withTimeout(fetchAudiusTrending(audiusGenreFor(moodGenre || seedTerm), 12), 10000, []) : [],
+      withTimeout(fetchLiveRadioStations({ tag: radioTag, limit: 3 }), 8000, [])
     ]);
     if (requestId !== state.discoverRequestId) return;
+
+    const basePool = interleave(results, freeTracks, trending).concat(stations, fallback);
+    finalizeDiscovery(basePool, rotation, alreadyShown);
+
+    // Fase 2: catalogo cruzado (Deezer/Last.fm/iTunes) resuelto a fuentes reproducibles.
+    const [chartSeeds, tagSeeds, itunesSeeds, moreResults] = await Promise.all([
+      withTimeout(fetchDeezerChartSeeds(30), 8000, []),
+      withTimeout(fetchLastfmTagSeeds(seedTerm, 20), 8000, []),
+      withTimeout(fetchItunesSeeds(`${seedTerm} ${new Date().getFullYear()}`, 16), 8000, []),
+      altQuery ? withTimeout(fetchYouTubeResults(`${altQuery} official music video`), 15000, []) : []
+    ]);
+    if (requestId !== state.discoverRequestId) return;
+
+    // Las semillas rotan antes de resolverse: sin esto siempre salian las mismas.
+    const crossPlatform = await withTimeout(
+      resolveSeedsToPlayable(rotateItems(uniqueSeeds(interleave(chartSeeds, tagSeeds, itunesSeeds)), rotation), 8),
+      15000,
+      []
+    );
+    if (requestId !== state.discoverRequestId) return;
+
     const explore = state.view === "explore"
-      ? (await Promise.all(exploreSeedQueries().map((q) => fetchMixedResults(q).catch(() => [])))).flat()
+      ? (await Promise.all(exploreSeedQueries().map((q) => withTimeout(fetchMixedResults(q), 10000, [])))).flat()
       : [];
     if (requestId !== state.discoverRequestId) return;
-    const fallback = getFallbackCatalogForMood(state.selectedMood);
-    const seeded = isRadioPlayable(state.current)
-      ? await fetchRelatedForItem(state.current).catch(() => [])
+
+    const seeded = isRadioPlayable(state.current) && !state.current?.isLiveRadio
+      ? await withTimeout(fetchRelatedForItem(state.current), 12000, [])
       : [];
-    const combined = pickDiverseTracks(
-      interleave(results, freeTracks, trending, explore).concat(seeded, fallback),
-      { max: 30 }
+    if (requestId !== state.discoverRequestId) return;
+
+    if (!crossPlatform.length && !explore.length && !seeded.length && !moreResults.length) return;
+
+    finalizeDiscovery(
+      interleave(results, crossPlatform, moreResults, freeTracks, trending, explore).concat(seeded, stations, fallback),
+      rotation,
+      alreadyShown
     );
-    const rotated = rotateItems(combined, state.discoverSeed + requestId);
-    state.discoverCache[state.mode].online = rotated;
-    setCachedValue(runtimeCache.discovery, cacheKey, rotated);
-    renderDiscovery(rotated);
-    return;
   } catch (error) {
     if (requestId !== state.discoverRequestId) return;
     const fallback = getFallbackCatalogForMood(state.selectedMood);
     const combined = uniqueItems([...(state.discoverCache[state.mode].online || []), ...fallback]).slice(0, 24);
-    if (String(error?.status || error?.code || "") === "429" || /quota/i.test(String(error?.message || ""))) {
-      setCachedValue(runtimeCache.discovery, cacheKey, combined);
-      renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
-      return;
-    }
-    setCachedValue(runtimeCache.discovery, cacheKey, combined);
-    renderDiscovery(rotateItems(combined, state.discoverSeed + requestId));
+    renderDiscovery(rotateItems(combined, state.discoverSeed + rotation));
+  } finally {
+    state.discoverLoading = false;
   }
 }
 
@@ -1752,6 +1946,7 @@ function radioGenreProfile(seed) {
   const signals = [
     seed?.title || "",
     seed?.subtitle || "",
+    seed?.genre || "",
     qState?.searchSeed || "",
     moodQueries[state.selectedMood] || ""
   ].join(" ");
@@ -1770,7 +1965,7 @@ function radioGenreProfile(seed) {
 function genreAffinityScore(seed, candidate) {
   const seedGenres = radioGenreProfile(seed);
   if (!seedGenres.size) return 0;
-  const candidateGenres = detectGenres(`${candidate?.title || ""} ${candidate?.subtitle || ""}`);
+  const candidateGenres = detectGenres(`${candidate?.title || ""} ${candidate?.subtitle || ""} ${candidate?.genre || ""}`);
   if (!candidateGenres.size) return -0.4;
 
   let overlap = 0;
@@ -2289,7 +2484,9 @@ function playStream(item) {
     state.isPlaying = false;
     updatePrimaryPlayButton();
   });
-  updateOnlineHint(item.provider === "jamendo" ? "Reproduciendo desde Jamendo." : "Reproduciendo desde Audius.");
+  updateOnlineHint(item.isLiveRadio
+    ? `Radio en vivo: ${item.title}.`
+    : `Reproduciendo desde ${providerLabel(item) || "catalogo libre"}.`);
 }
 
 function activeMediaElement() {
@@ -2649,6 +2846,32 @@ async function handleQueueEnd() {
   state.isPlaying = false;
 }
 
+// La busqueda manda: primero lo que coincide de verdad con lo escrito.
+// Los catalogos libres solo entran si el titulo/artista coincide; antes se
+// interleaveaban 1 a 1 y metian canciones que no tenian nada que ver.
+function rankSearchResults(query, { youtube = [], free = [], resolved = [], stations = [] }) {
+  const strongYoutube = [];
+  const weakYoutube = [];
+  youtube.forEach((item) => {
+    if (queryMatchScore(query, item) >= 0.5) strongYoutube.push(item);
+    else weakYoutube.push(item);
+  });
+
+  const relevantFree = free.filter((item) => queryMatchScore(query, item) >= 0.6);
+  const relevantResolved = resolved.filter((item) => queryMatchScore(query, item) >= 0.5);
+  const head = interleave(strongYoutube.slice(0, 12), relevantFree.slice(0, 6), relevantResolved.slice(0, 6));
+  const pool = [...head, ...strongYoutube.slice(12), ...relevantFree.slice(6), ...relevantResolved.slice(6), ...weakYoutube, ...stations];
+
+  const diverse = pickDiverseTracks(pool, { max: 40 });
+  if (diverse.length >= 18) return diverse;
+
+  // En una busqueda si interesan las otras versiones (en vivo, lyrics) de lo pedido;
+  // el filtro anti-duplicados fuerte se reserva para la radio y el descubrimiento.
+  const seen = new Set(diverse.map((item) => item.id));
+  const variants = pool.filter((item) => item?.id && !seen.has(item.id) && queryMatchScore(query, item) >= 0.5);
+  return uniqueItems([...diverse, ...variants]).slice(0, 24);
+}
+
 async function searchOnline() {
   const query = refs.onlineQuery.value.trim();
   if (!query) return;
@@ -2662,11 +2885,23 @@ async function searchOnline() {
   refs.onlineSearchBtn.textContent = "Buscando...";
 
   try {
-    const [youtube, free] = await Promise.all([
+    const [youtube, free, seedsItunes, seedsDeezer, stations] = await Promise.all([
       fetchYouTubeResults(query).catch(() => []),
-      fetchFreeCatalogResults(query).catch(() => [])
+      fetchFreeCatalogResults(query).catch(() => []),
+      fetchItunesSeeds(query, 10).catch(() => []),
+      fetchDeezerSeeds(query, 10).catch(() => []),
+      /\bradio\b|\bfm\b|\bam\b/i.test(query)
+        ? fetchLiveRadioStations({ name: query.replace(/\bradio\b/i, "").trim() || query, limit: 8 }).catch(() => [])
+        : Promise.resolve([])
     ]);
-    const results = pickDiverseTracks(interleave(youtube, free), { max: 40 });
+
+    // Solo se resuelven semillas cuando YouTube deja poco material util.
+    const needsBackfill = youtube.filter((item) => queryMatchScore(query, item) >= 0.5).length < 8;
+    const resolved = needsBackfill
+      ? await withTimeout(resolveSeedsToPlayable(interleave(seedsItunes, seedsDeezer), 6), 12000, [])
+      : [];
+
+    const results = rankSearchResults(query, { youtube, free, resolved, stations });
     if (!results.length) {
       throw new Error("Empty search results");
     }
@@ -2674,10 +2909,16 @@ async function searchOnline() {
     setResultsVisible(true);
     renderLibrary(results);
     refs.resultsSection?.scrollIntoView({ block: "start" });
-    if (free.length) {
-      updateOnlineHint(`Resultados de YouTube + catalogos libres (${free.length} pistas sin anuncios).`);
-    }
+
+    const extras = [];
+    if (free.some((item) => results.includes(item))) extras.push("catalogos libres");
+    if (resolved.length) extras.push("Deezer/iTunes resueltos");
+    if (stations.length) extras.push("radios en vivo");
+    updateOnlineHint(extras.length
+      ? `Resultados de YouTube + ${extras.join(" + ")}.`
+      : "Resultados ordenados por coincidencia con tu busqueda.");
   } catch (err) {
+
     const fallback = searchFallbackCatalog(query);
     state.library[state.mode].online = fallback;
     setResultsVisible(true);
@@ -2842,13 +3083,357 @@ function interleave(...lists) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Capa de metadatos multiplataforma.
+// Deezer, iTunes y Last.fm no entregan audio completo (y Spotify exige OAuth de
+// servidor), asi que se usan como catalogo de referencia: dicen QUE canciones
+// existen y cuales se parecen. Cada "semilla" se resuelve despues a una fuente
+// realmente reproducible (Audius, Jamendo o YouTube).
+// ---------------------------------------------------------------------------
+
+const ITUNES_API = "https://itunes.apple.com";
+const DEEZER_API = "https://api.deezer.com";
+const LASTFM_API = "https://ws.audioscrobbler.com/2.0/";
+const RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json";
+const SEED_RESOLVE_CONCURRENCY = 4;
+
+function metadataCatalogsEnabled() {
+  return appConfig.useMetadataCatalogs !== false && state.mode === "music";
+}
+
+function liveRadioEnabled() {
+  return appConfig.useLiveRadio !== false && state.mode === "music";
+}
+
+function lastfmApiKey() {
+  return String(appConfig.lastfmApiKey || "").trim();
+}
+
+// Deezer y otras APIs no mandan CORS: se prueban varios proxys publicos porque
+// ninguno es fiable al 100% (allorigins cae a ratos).
+const JSON_PROXIES = [
+  {
+    build: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    extract: (payload) => (typeof payload?.contents === "string" ? JSON.parse(payload.contents) : null)
+  },
+  { build: (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+  { build: (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` }
+];
+
+async function fetchJsonMaybeProxied(url, { cacheKey = "", ttl = METADATA_CACHE_TTL } = {}) {
+  const key = cacheKey || url;
+  const cached = getCachedValue(runtimeCache.metadata, key, ttl);
+  if (cached !== null && cached !== undefined) return cached;
+
+  let payload = null;
+  try {
+    const direct = await fetch(url, { mode: "cors" });
+    if (direct.ok) payload = await direct.json();
+  } catch (_) {
+    payload = null;
+  }
+
+  for (const proxy of JSON_PROXIES) {
+    if (payload) break;
+    try {
+      const res = await fetch(proxy.build(url), { mode: "cors" });
+      if (!res.ok) continue;
+      const body = await res.json();
+      payload = proxy.extract ? proxy.extract(body) : body;
+    } catch (_) {
+      payload = null;
+    }
+  }
+
+  if (payload) setCachedValue(runtimeCache.metadata, key, payload);
+  return payload;
+}
+
+function stripTitleNoise(text) {
+  return normalizeText(text)
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
+    .replace(/official\s*(music\s*)?(video|audio)|video\s*oficial|lyrics?|letra|visualizer|hd|4k|remaster(ed)?|mv/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// "Artist - Song (Official Video)" -> { artist, title }. Sin separador se usa el canal.
+function splitTitleArtist(item) {
+  const raw = stripTitleNoise(item?.title || "");
+  const parts = raw.split(/\s+[-–—|]\s+/).map((x) => x.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return { artist: parts[0], title: parts.slice(1).join(" ") };
+  }
+  return { artist: artistHint(item) || "", title: raw };
+}
+
+function makeSeed(title, artist, extra = {}) {
+  const seedTitle = stripTitleNoise(title);
+  const seedArtist = normalizeText(artist);
+  if (!seedTitle) return null;
+  return {
+    seedTitle,
+    seedArtist,
+    thumbnail: extra.thumbnail || "",
+    genre: normalizeText(extra.genre || ""),
+    origin: extra.origin || "",
+    key: `${seedArtist}|${seedTitle}`.toLowerCase()
+  };
+}
+
+function uniqueSeeds(seeds) {
+  const seen = new Set();
+  const out = [];
+  (seeds || []).forEach((seed) => {
+    if (!seed?.key || seen.has(seed.key)) return;
+    seen.add(seed.key);
+    out.push(seed);
+  });
+  return out;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = [];
+  let cursor = 0;
+  const runners = new Array(Math.max(1, Math.min(limit, items.length))).fill(null).map(async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (_) {
+        results[index] = null;
+      }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function fetchItunesSeeds(term, limit = 20) {
+  if (!metadataCatalogsEnabled() || !normalizeText(term)) return [];
+  const url = `${ITUNES_API}/search?media=music&entity=song&limit=${limit}&term=${encodeURIComponent(term)}`;
+  const data = await fetchJsonMaybeProxied(url);
+  return (Array.isArray(data?.results) ? data.results : [])
+    .map((row) => makeSeed(row.trackName, row.artistName, {
+      thumbnail: String(row.artworkUrl100 || "").replace("100x100", "400x400"),
+      genre: row.primaryGenreName,
+      origin: "itunes"
+    }))
+    .filter(Boolean);
+}
+
+function deezerTrackToSeed(track) {
+  return makeSeed(track?.title_short || track?.title, track?.artist?.name, {
+    thumbnail: track?.album?.cover_medium || track?.album?.cover_big || track?.artist?.picture_medium || "",
+    origin: "deezer"
+  });
+}
+
+async function fetchDeezerSeeds(query, limit = 20) {
+  if (!metadataCatalogsEnabled() || !normalizeText(query)) return [];
+  const data = await fetchJsonMaybeProxied(`${DEEZER_API}/search?limit=${limit}&q=${encodeURIComponent(query)}`);
+  return (Array.isArray(data?.data) ? data.data : []).map(deezerTrackToSeed).filter(Boolean);
+}
+
+async function fetchDeezerChartSeeds(limit = 25) {
+  if (!metadataCatalogsEnabled()) return [];
+  const data = await fetchJsonMaybeProxied(`${DEEZER_API}/chart/0/tracks?limit=${limit}`);
+  return (Array.isArray(data?.data) ? data.data : []).map(deezerTrackToSeed).filter(Boolean);
+}
+
+// Artistas parecidos segun Deezer + sus temas mas escuchados: base real de "radio".
+async function fetchDeezerRelatedSeeds(artist, limit = 12) {
+  if (!metadataCatalogsEnabled() || !normalizeText(artist)) return [];
+  const search = await fetchJsonMaybeProxied(`${DEEZER_API}/search/artist?limit=1&q=${encodeURIComponent(artist)}`);
+  const artistId = search?.data?.[0]?.id;
+  if (!artistId) return [];
+
+  const related = await fetchJsonMaybeProxied(`${DEEZER_API}/artist/${encodeURIComponent(artistId)}/related?limit=6`);
+  const artistIds = (Array.isArray(related?.data) ? related.data : []).map((x) => x?.id).filter(Boolean).slice(0, 5);
+  artistIds.unshift(artistId);
+
+  const buckets = await mapWithConcurrency(artistIds, 3, async (id) => {
+    const top = await fetchJsonMaybeProxied(`${DEEZER_API}/artist/${encodeURIComponent(id)}/top?limit=4`);
+    return (Array.isArray(top?.data) ? top.data : []).map(deezerTrackToSeed).filter(Boolean);
+  });
+
+  return uniqueSeeds(interleave(...buckets.filter(Boolean))).slice(0, limit);
+}
+
+async function fetchLastfmSimilarSeeds(artist, title, limit = 20) {
+  const key = lastfmApiKey();
+  if (!key || !metadataCatalogsEnabled() || !normalizeText(artist)) return [];
+
+  const method = normalizeText(title) ? "track.getsimilar" : "artist.gettoptracks";
+  const params = new URLSearchParams({ method, api_key: key, format: "json", limit: String(limit), artist });
+  if (normalizeText(title)) params.set("track", title);
+  params.set("autocorrect", "1");
+
+  const data = await fetchJsonMaybeProxied(`${LASTFM_API}?${params.toString()}`);
+  const rows = data?.similartracks?.track || data?.toptracks?.track || [];
+  return (Array.isArray(rows) ? rows : [rows])
+    .map((row) => makeSeed(row?.name, row?.artist?.name || row?.artist, { origin: "lastfm" }))
+    .filter(Boolean);
+}
+
+async function fetchLastfmTagSeeds(tag, limit = 20) {
+  const key = lastfmApiKey();
+  if (!key || !metadataCatalogsEnabled() || !normalizeText(tag)) return [];
+  const params = new URLSearchParams({ method: "tag.gettoptracks", api_key: key, format: "json", limit: String(limit), tag });
+  const data = await fetchJsonMaybeProxied(`${LASTFM_API}?${params.toString()}`);
+  const rows = data?.tracks?.track || [];
+  return (Array.isArray(rows) ? rows : [rows])
+    .map((row) => makeSeed(row?.name, row?.artist?.name || row?.artist, { origin: "lastfm" }))
+    .filter(Boolean);
+}
+
+function mapRadioStation(station) {
+  const url = String(station?.url_resolved || station?.url || "");
+  // Un stream http en una pagina https lo bloquea el navegador (mixed content).
+  if (!station?.stationuuid || !/^https:\/\//i.test(url)) return null;
+  const place = normalizeText(station.country || station.state || "Radio");
+  return {
+    id: `radio-${station.stationuuid}`,
+    provider: "radio",
+    kind: "stream",
+    isLiveRadio: true,
+    url,
+    title: normalizeText(station.name || "Radio").slice(0, 60),
+    subtitle: `${place} - En vivo`,
+    thumbnail: /^https:\/\//i.test(String(station.favicon || "")) ? station.favicon : "",
+    genre: normalizeText(String(station.tags || "").split(",")[0] || "")
+  };
+}
+
+async function fetchLiveRadioStations({ tag = "", name = "", limit = 10 } = {}) {
+  if (!liveRadioEnabled()) return [];
+  const params = new URLSearchParams({
+    limit: String(limit * 3),
+    hidebroken: "true",
+    order: "clickcount",
+    reverse: "true",
+    codec: "MP3"
+  });
+  if (tag) params.set("tag", tag);
+  if (name) params.set("name", name);
+  if (!tag && !name) return [];
+
+  const data = await fetchJsonMaybeProxied(`${RADIO_BROWSER_API}/stations/search?${params.toString()}`);
+  const mapped = (Array.isArray(data) ? data : []).map(mapRadioStation).filter(Boolean);
+  return uniqueItems(mapped).slice(0, limit);
+}
+
+function seedMatchesItem(seed, item) {
+  const seedTokens = trackTokens({ title: seed.seedTitle });
+  if (!tokensAreNearDuplicate(seedTokens, trackTokens(item))) return false;
+  const mainArtist = String(seed.seedArtist || "").toLowerCase().split(/,| & | feat\.?| ft\.?| with /)[0].trim();
+  const haystack = `${normalizeText(item?.title || "")} ${normalizeText(item?.subtitle || "")}`.toLowerCase();
+  if (mainArtist.length >= 3) return haystack.includes(mainArtist);
+  // Sin artista utilizable, un solo token en comun no basta ("Rockstars" pega con cualquier cosa).
+  return seedTokens.length >= 2;
+}
+
+// Convierte una semilla de metadatos en algo reproducible de verdad.
+// Se prioriza el catalogo libre (sin anuncios, suena en segundo plano) y solo
+// se acepta el resultado si el titulo y el artista coinciden.
+async function resolveSeedToPlayable(seed) {
+  if (!seed?.key) return null;
+  const cached = getCachedValue(runtimeCache.resolve, seed.key, RESOLVE_CACHE_TTL);
+  if (cached !== null && cached !== undefined) return cached ? { ...cached } : null;
+
+  const query = normalizeText(`${seed.seedArtist} ${seed.seedTitle}`);
+  const [free, youtube] = await Promise.all([
+    freeCatalogsEnabled() ? fetchAudiusResults(query, 6).catch(() => []) : Promise.resolve([]),
+    fetchYouTubeResults(query).catch(() => [])
+  ]);
+
+  const match = [...free, ...youtube].find((candidate) => seedMatchesItem(seed, candidate)) || null;
+  const resolved = match
+    ? {
+      ...match,
+      thumbnail: match.thumbnail || seed.thumbnail,
+      genre: match.genre || seed.genre,
+      seedOrigin: seed.origin
+    }
+    : null;
+
+  // Se cachea tambien el "no encontrado" (false) para no repetir la busqueda.
+  setCachedValue(runtimeCache.resolve, seed.key, resolved || false);
+  return resolved ? { ...resolved } : null;
+}
+
+// Se resuelve por tandas y se corta al llegar al cupo: cada semilla cuesta una
+// busqueda real, asi que no se resuelve el catalogo entero.
+async function resolveSeedsToPlayable(seeds, limit = 8) {
+  const list = uniqueSeeds(seeds).slice(0, Math.max(0, limit) * 2);
+  if (!list.length) return [];
+
+  const out = [];
+  for (let i = 0; i < list.length && out.length < limit; i += SEED_RESOLVE_CONCURRENCY) {
+    const batch = list.slice(i, i + SEED_RESOLVE_CONCURRENCY);
+    const resolved = await mapWithConcurrency(batch, SEED_RESOLVE_CONCURRENCY, resolveSeedToPlayable);
+    resolved.filter(Boolean).forEach((item) => out.push(item));
+  }
+
+  return uniqueItems(out).slice(0, limit);
+}
+
+// Recomendaciones reales cruzando plataformas: Last.fm dice que canciones se
+// parecen, Deezer que artistas son afines, iTunes completa con el mismo genero.
+async function fetchCrossPlatformRelated(item, limit = 8) {
+  if (!metadataCatalogsEnabled() || !item) return [];
+  const { artist: parsedArtist, title: parsedTitle } = splitTitleArtist(item);
+  const artist = parsedArtist || artistHint(item);
+  if (!artist && !parsedTitle) return [];
+
+  const buckets = await Promise.all([
+    fetchLastfmSimilarSeeds(artist, parsedTitle, 20).catch(() => []),
+    fetchDeezerRelatedSeeds(artist, 14).catch(() => []),
+    fetchItunesSeeds(artist, 16).catch(() => [])
+  ]);
+
+  const rotation = state.discoverRotation + Number(onlineQueueState()?.growthCycle || 0);
+  const seeds = uniqueSeeds(interleave(...buckets))
+    .filter((seed) => !seedMatchesItem(seed, item));
+
+  return resolveSeedsToPlayable(rotateItems(seeds, rotation), limit);
+}
+
+function queryTokens(query) {
+  return Array.from(new Set(
+    normalizeText(query)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 1)
+  ));
+}
+
+// Cuanto de la busqueda aparece realmente en el resultado (0..1).
+// Sin esto los catalogos libres colaban temas indie que no tenian nada que ver.
+function queryMatchScore(query, item) {
+  const tokens = queryTokens(query);
+  if (!tokens.length) return 1;
+  const haystack = `${normalizeText(item?.title || "")} ${normalizeText(item?.subtitle || "")}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ");
+  let hits = 0;
+  tokens.forEach((token) => {
+    if (haystack.includes(token)) hits += 1;
+  });
+  return hits / tokens.length;
+}
+
 // Fuente unica para la radio: mezcla YouTube con los catalogos libres y deduplica.
+// Los temas libres solo pasan si comparten algo con la consulta (artista o genero).
 async function fetchMixedResults(query) {
   const [youtube, free] = await Promise.all([
     fetchYouTubeResults(query).catch(() => []),
     fetchFreeCatalogResults(query).catch(() => [])
   ]);
-  return pickDiverseTracks(interleave(youtube, free), { max: 40 });
+  const relevantFree = free.filter((item) => queryMatchScore(query, item) >= 0.4);
+  return pickDiverseTracks(interleave(youtube, relevantFree), { max: 40 });
 }
 
 async function fetchYouTubeResults(query) {
@@ -2870,6 +3455,25 @@ async function fetchYouTubeResults(query) {
     }
   }
 
+  // El backend propio (si existe) va antes que el scraping: es mucho mas fiable.
+  if (hasLocalApi()) {
+    try {
+      const base = String(appConfig.publicApiBase || "").trim();
+      const route = `/api/search?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(state.mode)}`;
+      const proxyUrl = base ? `${base}${route}` : route;
+      const proxyRes = await fetch(proxyUrl);
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (Array.isArray(proxyData) && proxyData.length) {
+          setCachedValue(runtimeCache.search, cacheKey, proxyData);
+          return proxyData;
+        }
+      }
+    } catch (_) {
+      // Fallback below.
+    }
+  }
+
   try {
     const allOriginsResults = await fetchYouTubeResultsViaAllOrigins(query);
     if (allOriginsResults.length) {
@@ -2888,24 +3492,6 @@ async function fetchYouTubeResults(query) {
     }
   } catch (_) {
     // Fall through to the other fallbacks below.
-  }
-
-  if (hasLocalApi()) {
-    try {
-      const base = String(appConfig.publicApiBase || "").trim();
-      const route = `/api/search?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(state.mode)}`;
-      const proxyUrl = base ? `${base}${route}` : route;
-      const proxyRes = await fetch(proxyUrl);
-      if (proxyRes.ok) {
-        const proxyData = await proxyRes.json();
-        if (Array.isArray(proxyData) && proxyData.length) {
-          setCachedValue(runtimeCache.search, cacheKey, proxyData);
-          return proxyData;
-        }
-      }
-    } catch (_) {
-      // Fallback below.
-    }
   }
 
   for (const base of invidiousInstances) {
@@ -3716,6 +4302,19 @@ function bindEvents() {
   if (refs.navHome) refs.navHome.addEventListener("click", () => setView("home"));  if (refs.navExplore) refs.navExplore.addEventListener("click", () => setView("explore"));
   if (refs.navLibrary) refs.navLibrary.addEventListener("click", () => setView("library"));
 
+  if (refs.discoverRefreshBtn) {
+    refs.discoverRefreshBtn.addEventListener("click", async () => {
+      refs.discoverRefreshBtn.disabled = true;
+      refs.discoverRefreshBtn.textContent = "Buscando...";
+      try {
+        await loadDiscovery({ force: true });
+      } finally {
+        refs.discoverRefreshBtn.disabled = false;
+        refs.discoverRefreshBtn.textContent = "Actualizar";
+      }
+    });
+  }
+
   if (refs.libraryExtras) {
     refs.libraryExtras.addEventListener("click", (e) => {
       const btn = e.target.closest("button[data-query]");
@@ -4013,6 +4612,7 @@ function tick() {
 
 async function bootstrap() {
   state.youtubeApiKey = String(appConfig.youtubeApiKey || "").trim() || loadApiKey();
+  state.discoverRotation = loadDiscoverRotation();
   if (refs.ytApiKeyInput) {
     refs.ytApiKeyInput.value = state.youtubeApiKey;
   }
@@ -4068,8 +4668,9 @@ async function bootstrap() {
   if (!window.__duoDiscoveryRefreshTimer) {
     window.__duoDiscoveryRefreshTimer = window.setInterval(() => {
       if (!refs.discoverSection || refs.discoverSection.hidden) return;
+      if (document.hidden) return;
       loadDiscovery();
-    }, 180000);
+    }, 120000);
   }
 
   if (!window.__duoQueueGrowthTimer) {
@@ -4080,7 +4681,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=38", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=39", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
