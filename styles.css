@@ -353,6 +353,8 @@ body {
 #queueList .track-item {
   -webkit-user-select: none;
   user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #queueList .track-item.is-reordering {
@@ -482,6 +484,18 @@ body {
   min-width: 38px;
   padding: 6px 8px;
   font-weight: 700;
+}
+
+/* Con el modo orden son cuatro botones: en pantallas estrechas hay que apretarlos. */
+@media (max-width: 520px) {
+  #queueList .track-item .actions {
+    gap: 4px;
+  }
+
+  #queueList .track-item .actions .ghost {
+    min-width: 32px;
+    padding: 6px 4px;
+  }
 }
 
 button,

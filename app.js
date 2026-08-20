@@ -1400,8 +1400,9 @@ async function switchCurrentToFreeCatalog() {
 
   for (const query of queries) {
     const found = await fetchFreeCatalogResults(query, 12).catch(() => []);
-    const match = found.find((item) => tokensAreNearDuplicate(trackTokens(item), trackTokens(current)))
-      || (query === queries[queries.length - 1] ? found[0] : null);
+    // Solo vale la misma cancion: antes se aceptaba el primer resultado y sonaba
+    // cualquier otra cosa del catalogo libre.
+    const match = found.find((item) => tokensAreNearDuplicate(trackTokens(item), trackTokens(current)));
     if (!match) continue;
 
     const queue = nowQueue();
@@ -1494,7 +1495,8 @@ function renderQueue() {
         <button class="ghost" data-action="moveDown" data-pos="${i}" aria-label="Bajar" title="Bajar">▼</button>
         <button class="ghost" data-action="playNext" data-pos="${i}" aria-label="Poner en el turno" title="Poner en el turno">⏭</button>
         <button class="ghost" data-action="doneOrder" data-pos="${i}" aria-label="Listo" title="Listo">✓</button>`
-      : `<button class="ghost" data-action="jump" data-pos="${i}" aria-label="Ir a esta pista" title="Ir">⏵</button>
+      : `${canReorderQueue() ? `<button class="ghost" data-action="order" data-pos="${i}" aria-label="Cambiar el orden" title="Cambiar el orden">⇅</button>` : ""}
+        <button class="ghost" data-action="jump" data-pos="${i}" aria-label="Ir a esta pista" title="Ir">⏵</button>
         <button class="ghost" data-action="remove" data-pos="${i}" aria-label="Quitar" title="Quitar">✕</button>`;
     li.innerHTML = `
       <div class="track-head">
@@ -2080,6 +2082,7 @@ function buildOnlineQueue(seed, candidates) {
 async function startSmartPlayback(item, sourceItems = null) {
   const base = sourceItems || nowLibrary();
   const onlineRadio = state.source === "online" && isRadioPlayable(item);
+  alternativeChain = { signature: "", count: 0 };
 
   if (onlineRadio) {
     const qState = onlineQueueState();
@@ -2372,8 +2375,12 @@ function playItem(item, queuePosition = null) {
   applyDynamicTheme(item);
 
   if (item.kind === "local") {
+    // El iframe de YouTube puede tardar en cargar: sin esto arrancaba la pista
+    // anterior encima de la que se acaba de elegir.
+    state.pendingYouTubeItem = null;
     playLocal(item);
   } else if (item.kind === "stream") {
+    state.pendingYouTubeItem = null;
     playStream(item);
   } else {
     playYouTube(item);
@@ -2518,11 +2525,14 @@ function ensureStreamPlayer() {
     if (refs.miniPlayPause) refs.miniPlayPause.textContent = "▶";
     updatePrimaryPlayButton();
   });
-  audio.addEventListener("error", () => {
+  audio.addEventListener("error", async () => {
     if (state.current?.kind !== "stream") return;
     if (!audio.getAttribute("src")) return;
-    updateOnlineHint("No se pudo reproducir esta pista del catalogo libre. Saltando.");
+    const failed = state.current;
+    updateOnlineHint("Esa pista del catalogo libre fallo; buscando otra version...");
+    if (await playSameSongAlternative(failed)) return;
     if (state.autoplay) nextTrack();
+    updateOnlineHint("No se pudo reproducir esa pista del catalogo libre.");
   });
   streamPlayer = audio;
   return audio;
@@ -2670,8 +2680,13 @@ async function ensureBackgroundStreamsAhead(minStreams = 2) {
 
   const artist = artistHint(state.current || {});
   const genre = genreLabel[Array.from(radioGenreProfile(state.current || {}))[0]] || "pop";
-  const fresh = await fetchFreeCatalogResults(artist ? `${artist} ${genre}` : genre, 10).catch(() => []);
+  const query = artist ? `${artist} ${genre}` : genre;
+  const fresh = await fetchFreeCatalogResults(query, 10).catch(() => []);
   if (!fresh.length) return;
+
+  // Solo se cuelan pistas afines: si no, la cola acababa llena de remixes sueltos.
+  const relevant = relatedToCurrent(fresh.filter((x) => queryMatchScore(query, x) >= 0.4));
+  if (!relevant.length) return;
 
   const existing = new Set(related.map((x) => x.id));
   const signatures = new Set((qState.playedSignatures || []).filter(Boolean));
@@ -2680,7 +2695,7 @@ async function ensureBackgroundStreamsAhead(minStreams = 2) {
     if (sig) signatures.add(sig);
   });
 
-  const picked = pickDiverseTracks(fresh, {
+  const picked = pickDiverseTracks(relevant, {
     max: minStreams,
     blockedIds: existing,
     blockedSignatures: signatures,
@@ -2690,7 +2705,7 @@ async function ensureBackgroundStreamsAhead(minStreams = 2) {
 
   if (!picked.length) return;
 
-  related.splice(Math.min(from + 2, related.length), 0, ...picked);
+  related.splice(Math.min(from + 3, related.length), 0, ...picked);
   state.queue[state.mode][state.source] = related;
   renderQueue();
 }
@@ -2708,12 +2723,12 @@ function resumeYouTubeSoon() {
       }
     }, delay);
   });
-  setTimeout(handleBlockedBackgroundPlayback, 2600);
+  setTimeout(() => { handleBlockedBackgroundPlayback().catch(() => null); }, 2600);
 }
 
 // YouTube prohibe el segundo plano en su reproductor incrustado: si no logro
 // reanudarlo, sigo con una pista de catalogo libre o dejo el estado en pausa real.
-function handleBlockedBackgroundPlayback() {
+async function handleBlockedBackgroundPlayback() {
   if (!document.hidden || state.userPaused) return;
   if (state.current?.kind !== "youtube" || !state.isPlaying) return;
 
@@ -2726,12 +2741,20 @@ function handleBlockedBackgroundPlayback() {
   if (playing) return;
 
   if (state.preferFreeInBackground) {
+    // Primero la MISMA cancion en un catalogo libre; saltar a otra pista distinta
+    // era justo lo que hacia aparecer canciones que nadie habia pedido.
+    const blocked = state.current;
+    if (await playSameSongAlternative(blocked, { preferStream: true, streamOnly: true })) {
+      updateOnlineHint("YouTube no permite segundo plano; sigo la misma cancion sin anuncios.");
+      return;
+    }
+
     const queue = nowQueue();
     const from = Math.max(0, nowIndex());
     const nextFree = queue.findIndex((x, i) => i > from && x.kind === "stream" && !isAlreadyPlayed(x));
     if (nextFree >= 0) {
-      updateOnlineHint("YouTube no permite segundo plano; sigo con el catalogo libre.");
       playItem(queue[nextFree], nextFree);
+      updateOnlineHint("YouTube no permite segundo plano; sigo con el catalogo libre.");
       return;
     }
   }
@@ -2820,6 +2843,55 @@ function isAlreadyPlayed(item) {
   if ((qState.playedIds || []).includes(item.id)) return true;
   if ((qState.blockedIds || []).includes(item.id)) return true;
   return createDuplicateGuard(qState.playedSignatures || []).has(item);
+}
+
+// Evita encadenar busquedas infinitas cuando ninguna version se puede reproducir.
+let alternativeChain = { signature: "", count: 0 };
+
+// Si la pista elegida falla (muchos videos oficiales prohiben incrustarse), el
+// usuario quiere ESA cancion, no la siguiente de la cola: se busca otra version
+// de la misma antes de saltar.
+async function playSameSongAlternative(item, { preferStream = false, streamOnly = false } = {}) {
+  if (!item?.title) return false;
+
+  const signature = trackSignature(item);
+  if (alternativeChain.signature === signature) {
+    if (alternativeChain.count >= 2) return false;
+    alternativeChain.count += 1;
+  } else {
+    alternativeChain = { signature, count: 1 };
+  }
+
+  const parsed = splitTitleArtist(item);
+  const query = normalizeText(`${parsed.artist} ${parsed.title}`) || normalizeText(item.title);
+  if (!query) return false;
+
+  const blocked = new Set(isOnlineQueueMode() ? (onlineQueueState().blockedIds || []) : []);
+  const [youtube, free] = await Promise.all([
+    fetchYouTubeResults(query).catch(() => []),
+    fetchFreeCatalogResults(query, 10).catch(() => [])
+  ]);
+
+  // Primer intento: otra subida de la misma grabacion. Segundo: catalogo libre,
+  // porque si la primera alternativa tambien fallo el problema es de YouTube.
+  const preferFree = preferStream || alternativeChain.count >= 2;
+  const ordered = (preferFree ? [...free, ...youtube] : [...youtube, ...free])
+    .filter((candidate) => !streamOnly || candidate?.kind === "stream");
+  const match = ordered.find((candidate) => candidate?.id
+    && candidate.id !== item.id
+    && !blocked.has(candidate.id)
+    && tokensAreNearDuplicate(trackTokens(candidate), trackTokens(item)));
+  if (!match) return false;
+
+  const queue = nowQueue();
+  const target = clamp(nowIndex() + 1, 0, queue.length);
+  queue.splice(target, 0, match);
+  syncQueueReference(queue);
+  renderQueue();
+  playItem(match, target);
+  // El aviso va despues: al arrancar, el reproductor escribe su propio mensaje.
+  updateOnlineHint(`Esa version no se podia reproducir; sigo con la misma cancion desde ${providerLabel(match) || "otra fuente"}.`);
+  return true;
 }
 
 function nextTrack() {
@@ -4227,10 +4299,53 @@ function cancelQueueLongPress() {
 
 function endQueueDrag() {
   cancelQueueLongPress();
+  if (refs.queueList && queueDrag.pointerId !== null) {
+    try {
+      refs.queueList.releasePointerCapture?.(queueDrag.pointerId);
+    } catch (_) {
+      // El puntero ya no existe: soltarlo no es obligatorio para cerrar el arrastre.
+    }
+  }
   queueDrag.pointerId = null;
   queueDrag.id = "";
   queueDrag.active = false;
   if (refs.queueList) refs.queueList.style.touchAction = "";
+}
+
+// El dedo no siempre queda justo sobre una fila (sale de la lista, la fila esta
+// recortada por el scroll...), asi que si el impacto directo falla se usa la altura.
+function queueIndexFromPoint(x, y) {
+  const list = refs.queueList;
+  if (!list) return null;
+
+  const hit = document.elementFromPoint(x, y)?.closest?.(".track-item");
+  if (hit && list.contains(hit)) {
+    const pos = Number(hit.dataset.pos);
+    if (Number.isFinite(pos)) return pos;
+  }
+
+  const rows = Array.from(list.querySelectorAll(".track-item"));
+  if (!rows.length) return null;
+
+  for (const row of rows) {
+    const rect = row.getBoundingClientRect();
+    if (y >= rect.top && y <= rect.bottom) {
+      const pos = Number(row.dataset.pos);
+      if (Number.isFinite(pos)) return pos;
+    }
+  }
+
+  const edge = y < rows[0].getBoundingClientRect().top ? rows[0] : rows[rows.length - 1];
+  const pos = Number(edge.dataset.pos);
+  return Number.isFinite(pos) ? pos : null;
+}
+
+function autoScrollQueue(y) {
+  const list = refs.queueList;
+  if (!list || list.scrollHeight <= list.clientHeight) return;
+  const rect = list.getBoundingClientRect();
+  if (y < rect.top + 44) list.scrollTop -= 14;
+  else if (y > rect.bottom - 44) list.scrollTop += 14;
 }
 
 function bindQueueReorder() {
@@ -4252,10 +4367,26 @@ function bindQueueReorder() {
       queueDrag.active = true;
       state.queueReorderId = id;
       list.style.touchAction = "none";
+      // La captura vive en la lista, no en la fila: la fila se vuelve a crear en cada repintado.
+      try {
+        list.setPointerCapture(queueDrag.pointerId);
+      } catch (_) {
+        // Sin captura el arrastre sigue funcionando con los eventos de window.
+      }
       if (navigator.vibrate) navigator.vibrate(15);
       renderQueue();
       updateOnlineHint("Modo orden: arrastra la pista o usa las flechas.");
     }, 450);
+  });
+
+  // En movil hay que cancelar el scroll a mano: si el navegador se queda el gesto
+  // dispara pointercancel y el arrastre muere antes de empezar.
+  list.addEventListener("touchmove", (e) => {
+    if (queueDrag.active) e.preventDefault();
+  }, { passive: false });
+
+  list.addEventListener("contextmenu", (e) => {
+    if (queueDrag.active || queueDrag.timer) e.preventDefault();
   });
 
   // Los eventos de movimiento van en window: la lista se vuelve a pintar mientras se
@@ -4265,15 +4396,14 @@ function bindQueueReorder() {
 
     if (!queueDrag.active) {
       // Si el dedo se desplaza antes de tiempo es un scroll, no una pulsacion larga.
-      if (Math.abs(e.clientY - queueDrag.startY) > 10) cancelQueueLongPress();
+      if (Math.abs(e.clientY - queueDrag.startY) > 16) cancelQueueLongPress();
       return;
     }
 
     e.preventDefault();
-    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".track-item");
-    if (!over || !list.contains(over)) return;
-    const target = Number(over.dataset.pos);
-    if (!Number.isFinite(target)) return;
+    autoScrollQueue(e.clientY);
+    const target = queueIndexFromPoint(e.clientX, e.clientY);
+    if (target === null) return;
     moveQueueItemToIndex(queueDrag.id, target);
   }, { passive: false });
 
@@ -4396,6 +4526,13 @@ function bindEvents() {
 
     const item = queue[pos];
     if (!item) return;
+
+    if (action === "order") {
+      state.queueReorderId = item.id;
+      renderQueue();
+      updateOnlineHint("Modo orden: arrastra la pista o usa las flechas.");
+      return;
+    }
 
     if (action === "moveUp" || action === "moveDown") {
       moveQueueItemToIndex(item.id, pos + (action === "moveUp" ? -1 : 1));
@@ -4784,8 +4921,10 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
     events: {
       onReady: () => {
         state.ytReady = true;
-        if (state.pendingYouTubeItem) {
-          playYouTube(state.pendingYouTubeItem);
+        const pending = state.pendingYouTubeItem;
+        state.pendingYouTubeItem = null;
+        if (pending && state.current?.id === pending.id) {
+          playYouTube(pending);
         }
       },
       onStateChange: (event) => {
@@ -4821,7 +4960,7 @@ window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
 
 // 2: id invalido, 5: error del reproductor HTML5, 100: no disponible,
 // 101/150: el dueno no permite incrustar el video.
-function handleYouTubePlaybackError(code) {
+async function handleYouTubePlaybackError(code) {
   const current = state.current;
   if (!current || current.kind !== "youtube") return;
 
@@ -4834,12 +4973,17 @@ function handleYouTubePlaybackError(code) {
     dropFromQueues(current.id);
   }
 
-  const reason = code === 101 || code === 150
+  const embedBlocked = code === 101 || code === 150;
+  const reason = embedBlocked
     ? "El autor no permite reproducir este video fuera de YouTube."
     : "Este video no esta disponible.";
-  updateOnlineHint(`${reason} Saltando a la siguiente.`);
+  updateOnlineHint(`${reason} Buscando otra version de la misma cancion...`);
+
+  const replaced = await playSameSongAlternative(current);
+  if (replaced) return;
 
   if (!state.autoplay) {
+    updateOnlineHint(`${reason} Reproduccion detenida.`);
     state.isPlaying = false;
     stopSilentKeepAlive();
     updatePrimaryPlayButton();
@@ -4847,6 +4991,7 @@ function handleYouTubePlaybackError(code) {
   }
 
   nextTrack();
+  updateOnlineHint(`${reason} No hay otra version, sigo con la cola.`);
 }
 
 function dropFromQueues(id) {
@@ -4951,7 +5096,7 @@ async function bootstrap() {
   }
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=41", { updateViaCache: "none" }).catch(() => null);
+    navigator.serviceWorker.register("./sw.js?v=43", { updateViaCache: "none" }).catch(() => null);
   }
 }
 
